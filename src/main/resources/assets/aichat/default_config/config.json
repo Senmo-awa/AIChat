@@ -11,5 +11,10 @@
   "knowledge_dir": "knowledge",
   "use_json_mode": true,
   "enable_thinking": false,
-  "enable_tools": false
+  "enable_tools": false,
+  "api_type": "auto",
+  "reasoning_effort": "",
+  "send_thinking_field": false,
+  "max_output_tokens": 0,
+  "thinking_budget_tokens": 1024
 }

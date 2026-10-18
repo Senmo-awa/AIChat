@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.4.0 - 2026-10-18
+
+### Added
+
+- 新增 Anthropic Messages 协议支持（`/v1/messages`、`x-api-key`、`tool_use` / `tool_result`）。
+- 新增 `api_type` 配置（`auto` / `openai` / `deepseek` / `anthropic`），`auto` 按 `api_url` 判断。
+- 新增 `reasoning_effort`、`max_output_tokens`、`thinking_budget_tokens`、`send_thinking_field` 配置。
+- 本地推理服务（Ollama / LM Studio / vLLM）允许 Key 留空。
+- 错误信息会带上 API 返回的 `error.message`，便于排查。
+
+### Changed
+
+- 代码拆分为 `AiClient`（入口）、`OpenAiClient`、`AnthropicClient`，替换 `DeepSeekClient`。
+- `thinking` 字段改由 `send_thinking_field` 控制，默认不发送；部分平台关闭思考后不再返回 `tool_calls`。
+- 工具调用与 usage 统计在两种协议下行为一致。
+
+### Fixed
+
+- `api_url` 支持 base URL（如 `https://xxx/v1`），自动补上 `/chat/completions`，修复配置 base URL 时请求返回 404。
+- 启用工具调用时不再发送 `response_format=json_object`，修复部分 OpenAI 兼容平台（如千问 MaaS）在 JSON 模式下不返回 `tool_calls`、模型凭空编答案的问题。此时依靠系统提示词约束 JSON 输出。
+- 默认不发送 `thinking` 字段，避免部分平台在关闭思考后无法调用工具。
+
 ## 1.3.0 - 2026-10-18
 
 ### Added

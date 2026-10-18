@@ -41,7 +41,7 @@ gradlew.bat build
 
 | 字段 | 说明 |
 |---|---|
-| `api_url` | DeepSeek Chat Completions 端点 |
+| `api_url` | Chat Completions 端点；也可只填 base URL（如 `https://xxx/v1`），模组会自动补 `/chat/completions` |
 | `api_key` | DeepSeek API Key；保持占位值时模组跳过请求 |
 | `model` | 模型名称，默认 `deepseek-flash` |
 | `system_prompt_file` | 系统提示词文件名，相对 `config/aichat/` |
@@ -53,10 +53,45 @@ gradlew.bat build
 | `knowledge_dir` | 知识库目录名，相对 `config/aichat/` |
 | `use_json_mode` | 是否发送 `response_format=json_object` |
 | `enable_thinking` | 是否开启深度思考（`thinking`），默认关闭 |
-| `enable_tools` | 是否发送工具定义（知识库检索），默认关闭 |
+| `enable_tools` | 是否发送工具定义（知识库检索），默认关闭；开启时 `use_json_mode` 不生效 |
+| `api_type` | `auto` / `openai` / `deepseek` / `anthropic`，默认按 `api_url` 自动判断 |
+| `reasoning_effort` | 推理强度（`low` / `medium` / `high` 等），留空不发送 |
+| `send_thinking_field` | 是否发送 `thinking` 字段，默认 `false`；开启后部分平台（如千问 MaaS）会不返回 `tool_calls` |
+| `max_output_tokens` | 最大输出 token，`0` 表示不发送（Anthropic 默认 4096） |
+| `thinking_budget_tokens` | Anthropic 思考预算，默认 1024 |
 
 运行期状态保存在 `config/aichat/state.json`（全局开关、调试模式、禁止列表、玩家模式），
 token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查看。
+
+## 模型兼容性
+
+模组支持两类协议，`api_type` 为 `auto` 时按 `api_url` 自动判断：
+
+| 协议 | 端点 | 认证 |
+|---|---|---|
+| OpenAI 兼容 | `.../chat/completions` | `Authorization: Bearer` |
+| Anthropic Messages | `.../v1/messages` | `x-api-key` |
+
+`api_url` 可以只填 base URL，模组会自动补全端点。常见配置：
+
+| 平台 | api_url | api_type |
+|---|---|---|
+| DeepSeek | `https://api.deepseek.com` | `auto` |
+| 通义千问（百炼） | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `auto` |
+| Kimi | `https://api.moonshot.cn/v1` | `auto` |
+| 智谱 | `https://open.bigmodel.cn/api/paas/v4` | `auto` |
+| 豆包（火山方舟） | `https://ark.cn-beijing.volces.com/api/v3` | `auto` |
+| Gemini | `https://generativelanguage.googleapis.com/v1beta/openai` | `openai` |
+| OpenRouter | `https://openrouter.ai/api/v1` | `auto` |
+| Ollama / LM Studio | `http://localhost:11434/v1` | `auto`（Key 可留空） |
+| Claude | `https://api.anthropic.com/v1/messages` | `anthropic` |
+
+说明：
+
+- 默认不发送 `thinking` 字段。部分平台（如千问 MaaS）收到关闭思考的参数后不会返回 `tool_calls`，因此需要工具调用时请保持 `send_thinking_field: false`。
+- OpenAI 推理模型可用 `reasoning_effort` 控制强度。
+- Anthropic 的思考开关同样由 `enable_thinking` 控制，预算由 `thinking_budget_tokens` 指定。
+- OpenAI Responses API、Gemini 原生 `generateContent` 不在支持范围，请使用各自的 Chat Completions 兼容端点。
 
 ## 命令
 

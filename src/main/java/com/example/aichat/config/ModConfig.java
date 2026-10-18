@@ -15,6 +15,10 @@ package com.example.aichat.config;
  * use_json_mode: 是否发送 response_format=json_object
  * enable_thinking: 是否开启深度思考（thinking），默认关闭
  * enable_tools: 是否发送工具定义（知识库检索），默认关闭
+ * api_type: auto / openai / deepseek / anthropic，auto 时按 api_url 判断
+ * reasoning_effort: low/medium/high 等；留空则不发送
+ * max_output_tokens: 最大输出 token；0 表示不发送（Anthropic 用默认值）
+ * thinking_budget_tokens: Anthropic 思考预算
  */
 public class ModConfig {
     public String api_url = "https://api.deepseek.com/chat/completions";
@@ -30,4 +34,14 @@ public class ModConfig {
     public boolean use_json_mode = true;
     public boolean enable_thinking = false;
     public boolean enable_tools = false;
+    public String api_type = "auto";
+    public String reasoning_effort = "";
+    /**
+     * 是否发送 thinking 字段，默认 false。
+     * 部分平台（如千问 MaaS）收到关闭思考的参数后不再返回 tool_calls，
+     * 需要工具调用时请保持 false。
+     */
+    public boolean send_thinking_field = false;
+    public int max_output_tokens = 0;
+    public int thinking_budget_tokens = 1024;
 }

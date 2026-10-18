@@ -60,7 +60,7 @@ public final class AiDispatcher {
 
         WORKER.submit(() -> {
             try {
-                DeepSeekClient.AiResult result = DeepSeekClient.ask(ctx).join();
+                AiResult result = AiClient.ask(ctx).join();
                 TokenUsage usage = result.usage();
                 if (usage == null) {
                     usage = TokenUsage.ZERO;

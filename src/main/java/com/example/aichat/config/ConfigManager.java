@@ -14,6 +14,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.Locale;
 
 public final class ConfigManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -126,6 +127,25 @@ public final class ConfigManager {
         return config;
     }
 
+    /**
+     * api_url 支持两种写法：完整端点，或 OpenAI 兼容的 base URL（如 https://xxx/v1）。
+     * 后者会自动补上 /chat/completions，避免 404。
+     */
+    public static String chatCompletionsUrl() {
+        String url = config == null ? null : config.api_url;
+        if (url == null || url.isBlank()) {
+            url = "https://api.deepseek.com/chat/completions";
+        }
+        String normalized = url.trim();
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        if (!normalized.endsWith("/chat/completions")) {
+            normalized = normalized + "/chat/completions";
+        }
+        return normalized;
+    }
+
     public static Path dir() {
         return modConfigDir;
     }
@@ -146,11 +166,74 @@ public final class ConfigManager {
         return Files.readString(file, StandardCharsets.UTF_8);
     }
 
+    /**
+     * auto 时按 api_url 识别协议：
+     * Anthropic 用 /v1/messages（x-api-key），其余走 OpenAI 兼容的 /chat/completions。
+     */
+    public static String apiType() {
+        ModConfig current = config;
+        String type = current == null || current.api_type == null
+                ? "auto"
+                : current.api_type.trim().toLowerCase(Locale.ROOT);
+        if ("anthropic".equals(type) || "claude".equals(type)) {
+            return "anthropic";
+        }
+        if ("deepseek".equals(type)) {
+            return "deepseek";
+        }
+        if ("openai".equals(type)) {
+            return "openai";
+        }
+        String url = current == null || current.api_url == null
+                ? ""
+                : current.api_url.toLowerCase(Locale.ROOT);
+        if (url.contains("anthropic.com") || url.endsWith("/messages")) {
+            return "anthropic";
+        }
+        if (url.contains("api.deepseek.com")) {
+            return "deepseek";
+        }
+        return "openai";
+    }
+
+    public static boolean isAnthropic() {
+        return "anthropic".equals(apiType());
+    }
+
+    public static boolean isDeepSeek() {
+        return "deepseek".equals(apiType());
+    }
+
+    public static String anthropicMessagesUrl() {
+        String url = config == null ? null : config.api_url;
+        if (url == null || url.isBlank()) {
+            url = "https://api.anthropic.com/v1/messages";
+        }
+        String normalized = url.trim();
+        while (normalized.endsWith("/")) {
+            normalized = normalized.substring(0, normalized.length() - 1);
+        }
+        if (normalized.endsWith("/messages")) {
+            return normalized;
+        }
+        if (normalized.endsWith("/v1")) {
+            return normalized + "/messages";
+        }
+        return normalized + "/v1/messages";
+    }
+
     public static boolean isApiKeyConfigured() {
         if (config == null || config.api_key == null) {
             return false;
         }
         String key = config.api_key.trim();
-        return !key.isEmpty() && !PLACEHOLDER_KEY.equals(key);
+        if (!key.isEmpty() && !PLACEHOLDER_KEY.equals(key)) {
+            return true;
+        }
+        // 本地推理服务（Ollama / LM Studio / vLLM）通常不需要 Key
+        String url = config.api_url == null ? "" : config.api_url.toLowerCase(Locale.ROOT);
+        return url.contains("localhost")
+                || url.contains("127.0.0.1")
+                || url.contains("[::1]");
     }
 }

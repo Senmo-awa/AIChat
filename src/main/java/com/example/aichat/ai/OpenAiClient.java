@@ -1,6 +1,5 @@
 package com.example.aichat.ai;
 
-import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.usage.TokenUsage;
@@ -18,38 +17,23 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.concurrent.CompletableFuture;
 
-public final class DeepSeekClient {
+/**
+ * OpenAI Chat Completions 兼容协议。
+ * 覆盖 DeepSeek、通义千问、Kimi、智谱、豆包、Gemini 兼容端点、Ollama 等。
+ */
+public final class OpenAiClient {
     private static final Gson GSON = new Gson();
     private static final HttpClient HTTP = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    /**
-     * usage 是本次对话（含 tool call 的第二轮请求）累计的 token 用量。
-     */
-    public record AiResult(boolean reply, String content, TokenUsage usage) {
-    }
-
-    private DeepSeekClient() {
+    private OpenAiClient() {
     }
 
     public static CompletableFuture<AiResult> ask(ChatContext ctx) {
         String systemPrompt;
         try {
-            String files = String.join("\n", KnowledgeReader.listFiles());
-            if (files.isBlank()) {
-                files = "（无）";
-            }
-            String persona;
-            try {
-                persona = ConfigManager.readPersonaPrompt();
-            } catch (Exception e) {
-                persona = "";
-                AiChatMod.LOGGER.warn("读取人设文件失败: {}", e.getMessage());
-            }
-            systemPrompt = ConfigManager.readSystemPrompt()
-                    .replace("{KNOWLEDGE_FILE_LIST}", files)
-                    .replace("{PERSONA_PROMPT}", persona);
+            systemPrompt = AiClient.buildSystemPrompt();
         } catch (Exception e) {
             return CompletableFuture.failedFuture(e);
         }
@@ -68,7 +52,8 @@ public final class DeepSeekClient {
                     ? message.getAsJsonArray("tool_calls") : null;
 
             if (toolCalls == null || toolCalls.isEmpty()) {
-                return CompletableFuture.completedFuture(parseContent(message, firstUsage));
+                return CompletableFuture.completedFuture(
+                        AiClient.parseReply(contentOf(message), firstUsage));
             }
 
             JsonObject toolCall = toolCalls.get(0).getAsJsonObject();
@@ -94,8 +79,8 @@ public final class DeepSeekClient {
 
             JsonObject secondBody = baseBody();
             secondBody.add("messages", messages);
-            return send(secondBody).thenApply(resp -> parseContent(
-                    firstMessage(resp),
+            return send(secondBody).thenApply(resp -> AiClient.parseReply(
+                    contentOf(firstMessage(resp)),
                     firstUsage.plus(parseUsage(resp))
             ));
         });
@@ -129,22 +114,48 @@ public final class DeepSeekClient {
         return message.getAsJsonObject();
     }
 
+    private static String contentOf(JsonObject message) {
+        JsonElement content = message.get("content");
+        return content == null || content.isJsonNull() ? null : content.getAsString();
+    }
+
     private static JsonObject baseBody() {
         JsonObject body = new JsonObject();
         body.addProperty("model", ConfigManager.get().model);
         body.addProperty("stream", false);
 
-        JsonObject thinking = new JsonObject();
-        thinking.addProperty("type", ConfigManager.get().enable_thinking ? "enabled" : "disabled");
-        body.add("thinking", thinking);
+        // 默认不发送 thinking：部分平台收到关闭思考的参数后不再返回 tool_calls。
+        // 需要显式控制思考时再打开 send_thinking_field。
+        boolean sendThinking = ConfigManager.get().send_thinking_field
+                || ConfigManager.get().enable_thinking;
+        if (sendThinking) {
+            JsonObject thinking = new JsonObject();
+            thinking.addProperty("type",
+                    ConfigManager.get().enable_thinking ? "enabled" : "disabled");
+            body.add("thinking", thinking);
+        }
 
-        if (ConfigManager.get().use_json_mode) {
+        String effort = ConfigManager.get().reasoning_effort;
+        if (effort != null && !effort.isBlank()) {
+            body.addProperty("reasoning_effort", effort.trim());
+        }
+
+        int maxTokens = ConfigManager.get().max_output_tokens;
+        if (maxTokens > 0) {
+            body.addProperty("max_tokens", maxTokens);
+        }
+
+        boolean toolsEnabled = ConfigManager.get().enable_tools;
+
+        // 部分 OpenAI 兼容平台在 json_object 模式下不返回 tool_calls，
+        // 模型会直接编答案。启用工具时改为只靠系统提示词约束 JSON。
+        if (ConfigManager.get().use_json_mode && !toolsEnabled) {
             JsonObject format = new JsonObject();
             format.addProperty("type", "json_object");
             body.add("response_format", format);
         }
 
-        if (ConfigManager.get().enable_tools) {
+        if (toolsEnabled) {
             body.add("tools", toolDefinitions());
         }
         return body;
@@ -182,7 +193,7 @@ public final class DeepSeekClient {
 
     private static CompletableFuture<JsonObject> send(JsonObject body) {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(ConfigManager.get().api_url))
+                .uri(URI.create(ConfigManager.chatCompletionsUrl()))
                 .timeout(Duration.ofSeconds(Math.max(5, ConfigManager.get().request_timeout_seconds)))
                 .header("Content-Type", "application/json")
                 .header("Authorization", "Bearer " + ConfigManager.get().api_key)
@@ -192,8 +203,9 @@ public final class DeepSeekClient {
         return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .thenApply(response -> {
                     if (response.statusCode() != 200) {
-                        // 只记录状态码，避免泄露请求体与 API Key
-                        throw new RuntimeException("API 返回 " + response.statusCode());
+                        // 只记录状态码与错误消息，避免泄露请求体与 API Key
+                        throw new RuntimeException("API 返回 " + response.statusCode()
+                                + AiClient.errorDetail(response.body()));
                     }
                     JsonElement root = JsonParser.parseString(response.body());
                     if (!root.isJsonObject()) {
@@ -201,32 +213,6 @@ public final class DeepSeekClient {
                     }
                     return root.getAsJsonObject();
                 });
-    }
-
-    private static AiResult parseContent(JsonObject message, TokenUsage usage) {
-        try {
-            JsonElement contentElement = message.get("content");
-            if (contentElement == null || contentElement.isJsonNull()) {
-                return new AiResult(false, null, usage);
-            }
-            String content = contentElement.getAsString();
-            JsonObject json = JsonParser.parseString(content).getAsJsonObject();
-            String action = json.has("action") ? json.get("action").getAsString() : "";
-            if (!"reply".equals(action)) {
-                return new AiResult(false, null, usage);
-            }
-            JsonElement reply = json.get("content");
-            if (reply == null || reply.isJsonNull()) {
-                return new AiResult(false, null, usage);
-            }
-            String text = reply.getAsString().trim();
-            return text.isEmpty()
-                    ? new AiResult(false, null, usage)
-                    : new AiResult(true, text, usage);
-        } catch (Exception e) {
-            AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略");
-            return new AiResult(false, null, usage);
-        }
     }
 
     /**
