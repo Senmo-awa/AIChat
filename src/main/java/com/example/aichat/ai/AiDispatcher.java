@@ -55,7 +55,11 @@ public final class AiDispatcher {
                 if (server == null) {
                     return;
                 }
-                String line = "[AI] " + result.content();
+                String prefix = ConfigManager.get().reply_prefix;
+                if (prefix == null) {
+                    prefix = "[AI] ";
+                }
+                String line = prefix + result.content();
                 server.execute(() ->
                         server.getPlayerList().broadcastSystemMessage(Component.literal(line), false)
                 );

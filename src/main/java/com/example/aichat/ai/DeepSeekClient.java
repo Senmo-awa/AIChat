@@ -37,10 +37,16 @@ public final class DeepSeekClient {
             if (files.isBlank()) {
                 files = "（无）";
             }
+            String persona;
+            try {
+                persona = ConfigManager.readPersonaPrompt();
+            } catch (Exception e) {
+                persona = "";
+                AiChatMod.LOGGER.warn("读取人设文件失败: {}", e.getMessage());
+            }
             systemPrompt = ConfigManager.readSystemPrompt()
                     .replace("{KNOWLEDGE_FILE_LIST}", files)
-                    .replace("{PERSONA_PROMPT}", ConfigManager.get().persona_prompt == null
-                            ? "" : ConfigManager.get().persona_prompt);
+                    .replace("{PERSONA_PROMPT}", persona);
         } catch (Exception e) {
             return CompletableFuture.failedFuture(e);
         }
