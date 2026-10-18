@@ -12,14 +12,24 @@ import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permissions;
 
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Deque;
+import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AiDispatcher {
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "aichat-worker");
+        thread.setDaemon(true);
+        return thread;
+    });
+    private static final ScheduledExecutorService TIMER = Executors.newSingleThreadScheduledExecutor(r -> {
+        Thread thread = new Thread(r, "aichat-buffer");
         thread.setDaemon(true);
         return thread;
     });
@@ -29,12 +39,19 @@ public final class AiDispatcher {
     private static final AtomicBoolean KEY_WARNED = new AtomicBoolean(false);
     private static volatile MinecraftServer currentServer;
 
+    // 消息缓冲：最后一条消息后等待若干秒，期间的新消息会重置计时器并合并发送。
+    private static final Object BUFFER_LOCK = new Object();
+    private static final Deque<ChatContext> BUFFER = new ArrayDeque<>();
+    private static int bufferedChars = 0;
+    private static long flushGeneration = 0;
+    private static ScheduledFuture<?> flushTask;
+
     private AiDispatcher() {
     }
 
     /**
      * 所有事件进入 AI 之前的统一校验点。
-     * 被 ban、全局关闭、玩家 off/onlyread 的消息在这里拦截，不会发往 API。
+     * 被 ban、全局关闭、玩家 off/onlyread 的消息在这里拦截，不会进入缓冲区。
      */
     public static void submit(ChatContext ctx) {
         if (!StateManager.canReplyTo(ctx.playerName())) {
@@ -51,28 +68,90 @@ public final class AiDispatcher {
             }
         }
 
-        if (!ConfigManager.isApiKeyConfigured()) {
+        if (!ConfigManager.get().buffer_enabled) {
+            process(List.of(ctx));
+            return;
+        }
+
+        List<ChatContext> batch = null;
+        synchronized (BUFFER_LOCK) {
+            BUFFER.addLast(ctx);
+            bufferedChars += ctx.content() == null ? 0 : ctx.content().length();
+            if (exceedsLimit()) {
+                batch = takeBufferLocked();
+            } else {
+                scheduleFlushLocked();
+            }
+        }
+        if (batch != null) {
+            process(batch);
+        }
+    }
+
+    private static boolean exceedsLimit() {
+        return BUFFER.size() >= Math.max(1, ConfigManager.get().buffer_max_messages)
+                || bufferedChars >= Math.max(1, ConfigManager.get().buffer_max_chars);
+    }
+
+    private static void scheduleFlushLocked() {
+        if (flushTask != null) {
+            flushTask.cancel(false);
+        }
+        long generation = ++flushGeneration;
+        int delay = Math.max(1, ConfigManager.get().buffer_delay_seconds);
+        flushTask = TIMER.schedule(() -> flushDue(generation), delay, TimeUnit.SECONDS);
+    }
+
+    private static void flushDue(long generation) {
+        List<ChatContext> batch = null;
+        synchronized (BUFFER_LOCK) {
+            if (generation != flushGeneration || BUFFER.isEmpty()) {
+                return;
+            }
+            batch = takeBufferLocked();
+        }
+        process(batch);
+    }
+
+    private static List<ChatContext> takeBufferLocked() {
+        List<ChatContext> batch = new ArrayList<>(BUFFER);
+        BUFFER.clear();
+        bufferedChars = 0;
+        flushGeneration++;
+        if (flushTask != null) {
+            flushTask.cancel(false);
+            flushTask = null;
+        }
+        return batch;
+    }
+
+    private static void process(List<ChatContext> events) {
+        if (events.isEmpty() || !StateManager.isChatEnabled()) {
+            return;
+        }
+
+        ChatContext batch = ChatContext.batch(events);
+
+        if (!ConfigManager.hasUsableApiKey()) {
             if (KEY_WARNED.compareAndSet(false, true)) {
-                AiChatMod.LOGGER.warn("未配置 DeepSeek API Key，AI 回复已暂停（请编辑 config/aichat/config.json）");
+                AiChatMod.LOGGER.warn(
+                        "未配置可用的 API Key，AI 回复已暂停（请编辑 config/aichat/config.json 或 system.json）");
             }
             return;
         }
 
         WORKER.submit(() -> {
             try {
-                AiResult result = AiClient.ask(ctx).join();
-                TokenUsage usage = result.usage();
-                if (usage == null) {
-                    usage = TokenUsage.ZERO;
-                }
+                AiResult result = AiClient.ask(batch).join();
+                TokenUsage usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
 
                 if (usage.total() > 0) {
                     AiChatMod.LOGGER.info(
-                            "AI token 用量：prompt={} completion={} total={}（玩家：{}，事件：{}）",
+                            "AI token 用量：prompt={} completion={} total={}（玩家：{}，事件：{}，消息数：{}）",
                             usage.prompt(), usage.completion(), usage.total(),
-                            ctx.playerName(), ctx.eventType()
+                            batch.playerName(), batch.eventType(), events.size()
                     );
-                    UsageStore.record(ctx.playerName(), ConfigManager.get().model, usage);
+                    UsageStore.record(batch.playerName(), ConfigManager.usageModelName(), usage);
                 }
 
                 if (!result.reply() || result.content() == null) {

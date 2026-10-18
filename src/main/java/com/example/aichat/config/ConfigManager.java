@@ -1,5 +1,7 @@
 package com.example.aichat.config;
 
+import com.example.aichat.AiChatMod;
+import com.example.aichat.knowledge.KnowledgeReader;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
@@ -15,15 +17,21 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 import java.util.Locale;
+import java.util.Map;
 
 public final class ConfigManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String PLACEHOLDER_KEY = "sk-your-key-here";
     private static final String DEFAULT_SYSTEM_PROMPT_FILE = "system_prompt.txt";
     private static final String DEFAULT_PERSONA_FILE = "persona_prompt.txt";
+    private static final String DEFAULT_JUDGE_PROMPT_FILE = "judge_prompt.txt";
+    private static final String DEFAULT_REPLY_PROMPT_FILE = "reply_prompt.txt";
     private static final String LEGACY_PERSONA_FIELD = "persona_prompt";
+    private static final int CURRENT_CONFIG_VERSION = 2;
+    private static final int CURRENT_SYSTEM_VERSION = 1;
 
     private static volatile ModConfig config;
+    private static volatile SystemConfig systemConfig;
     private static Path modConfigDir;
 
     private ConfigManager() {
@@ -35,7 +43,7 @@ public final class ConfigManager {
     }
 
     /**
-     * 重新读取 config.json；/reload 命令会调用这里。
+     * 重新读取 config.json / system.json；/aichat reload 会调用这里。
      * 读取或解析失败时抛 RuntimeException，旧配置保持不变。
      */
     public static synchronized void reload() {
@@ -44,23 +52,33 @@ public final class ConfigManager {
             copyIfMissing("config.json");
 
             Path configFile = modConfigDir.resolve("config.json");
-            String json = Files.readString(configFile, StandardCharsets.UTF_8);
-            JsonObject root = JsonParser.parseString(json).getAsJsonObject();
+            upgradeFile(configFile, "config.json", CURRENT_CONFIG_VERSION, "config_version");
+            JsonObject root = JsonParser.parseString(
+                    Files.readString(configFile, StandardCharsets.UTF_8)).getAsJsonObject();
 
             boolean rewriteConfig = migrateLegacyPersona(root);
-
             ModConfig loaded = GSON.fromJson(root, ModConfig.class);
             if (loaded == null) {
                 loaded = new ModConfig();
             }
             applyDefaults(loaded);
-
-            // 全部校验通过后再替换，避免加载失败时丢失旧配置
-            config = loaded;
-
             if (rewriteConfig) {
                 Files.writeString(configFile, GSON.toJson(root), StandardCharsets.UTF_8);
             }
+
+            copyIfMissing("system.json");
+            Path systemFile = modConfigDir.resolve("system.json");
+            upgradeFile(systemFile, "system.json", CURRENT_SYSTEM_VERSION, "version");
+            SystemConfig loadedSystem = GSON.fromJson(
+                    Files.readString(systemFile, StandardCharsets.UTF_8), SystemConfig.class);
+            if (loadedSystem == null) {
+                loadedSystem = new SystemConfig();
+            }
+            applySystemDefaults(loadedSystem);
+
+            // 全部校验通过后再替换，避免加载失败时丢失旧配置
+            config = loaded;
+            systemConfig = loadedSystem;
 
             if (DEFAULT_SYSTEM_PROMPT_FILE.equals(loaded.system_prompt_file)) {
                 copyIfMissing(DEFAULT_SYSTEM_PROMPT_FILE);
@@ -68,6 +86,8 @@ public final class ConfigManager {
             if (DEFAULT_PERSONA_FILE.equals(loaded.persona_prompt_file)) {
                 copyIfMissing(DEFAULT_PERSONA_FILE);
             }
+            copyIfMissing(DEFAULT_JUDGE_PROMPT_FILE);
+            copyIfMissing(DEFAULT_REPLY_PROMPT_FILE);
 
             Files.createDirectories(modConfigDir.resolve(loaded.knowledge_dir));
         } catch (IOException | JsonParseException e) {
@@ -87,6 +107,30 @@ public final class ConfigManager {
         }
         if (target.reply_prefix == null) {
             target.reply_prefix = "[AI] ";
+        }
+        if (target.buffer_delay_seconds < 1) {
+            target.buffer_delay_seconds = 5;
+        }
+        if (target.buffer_max_messages < 1) {
+            target.buffer_max_messages = 10;
+        }
+        if (target.buffer_max_chars < 1) {
+            target.buffer_max_chars = 500;
+        }
+    }
+
+    private static void applySystemDefaults(SystemConfig target) {
+        if (target.judge == null) {
+            target.judge = new SystemConfig.ApiSettings();
+        }
+        if (target.reply == null) {
+            target.reply = new SystemConfig.ApiSettings();
+        }
+        if (target.judge.system_prompt_file == null || target.judge.system_prompt_file.isBlank()) {
+            target.judge.system_prompt_file = DEFAULT_JUDGE_PROMPT_FILE;
+        }
+        if (target.reply.system_prompt_file == null || target.reply.system_prompt_file.isBlank()) {
+            target.reply.system_prompt_file = DEFAULT_REPLY_PROMPT_FILE;
         }
     }
 
@@ -109,6 +153,67 @@ public final class ConfigManager {
         return true;
     }
 
+    /**
+     * 版本低于当前值时，备份原文件并用默认模板补齐缺失字段，已有值保持不变。
+     */
+    private static void upgradeFile(Path file, String resourceName, int currentVersion, String versionField)
+            throws IOException {
+        String text = Files.readString(file, StandardCharsets.UTF_8);
+        JsonObject user = JsonParser.parseString(text).getAsJsonObject();
+        int version = 1;
+        if (user.has(versionField) && user.get(versionField).isJsonPrimitive()) {
+            try {
+                version = user.get(versionField).getAsInt();
+            } catch (NumberFormatException ignored) {
+                version = 1;
+            }
+        }
+        if (version >= currentVersion) {
+            return;
+        }
+
+        JsonObject merged = mergeDefaults(defaultJson(resourceName), user);
+        merged.addProperty(versionField, currentVersion);
+        backup(file, version);
+        Files.writeString(file, GSON.toJson(merged), StandardCharsets.UTF_8);
+        AiChatMod.LOGGER.info("已升级 {}（v{} -> v{}），原文件已备份", resourceName, version, currentVersion);
+    }
+
+    private static JsonObject defaultJson(String name) throws IOException {
+        try (InputStream in = ConfigManager.class
+                .getResourceAsStream("/assets/aichat/default_config/" + name)) {
+            if (in == null) {
+                throw new IOException("缺少默认资源: " + name);
+            }
+            String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            return JsonParser.parseString(text).getAsJsonObject();
+        }
+    }
+
+    private static JsonObject mergeDefaults(JsonObject defaults, JsonObject user) {
+        JsonObject result = user.deepCopy();
+        for (Map.Entry<String, JsonElement> entry : defaults.entrySet()) {
+            String key = entry.getKey();
+            JsonElement defaultValue = entry.getValue();
+            if (!result.has(key)) {
+                result.add(key, defaultValue.deepCopy());
+            } else if (defaultValue.isJsonObject() && result.get(key).isJsonObject()) {
+                result.add(key, mergeDefaults(
+                        defaultValue.getAsJsonObject(),
+                        result.get(key).getAsJsonObject()));
+            }
+        }
+        return result;
+    }
+
+    private static void backup(Path file, int version) throws IOException {
+        String name = file.getFileName() + ".v" + version + ".bak";
+        Path backup = file.resolveSibling(name);
+        if (!Files.exists(backup)) {
+            Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
     private static void copyIfMissing(String name) throws IOException {
         Path target = modConfigDir.resolve(name);
         if (Files.exists(target)) {
@@ -127,27 +232,16 @@ public final class ConfigManager {
         return config;
     }
 
-    /**
-     * api_url 支持两种写法：完整端点，或 OpenAI 兼容的 base URL（如 https://xxx/v1）。
-     * 后者会自动补上 /chat/completions，避免 404。
-     */
-    public static String chatCompletionsUrl() {
-        String url = config == null ? null : config.api_url;
-        if (url == null || url.isBlank()) {
-            url = "https://api.deepseek.com/chat/completions";
-        }
-        String normalized = url.trim();
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
-        }
-        if (!normalized.endsWith("/chat/completions")) {
-            normalized = normalized + "/chat/completions";
-        }
-        return normalized;
+    public static SystemConfig system() {
+        return systemConfig;
     }
 
     public static Path dir() {
         return modConfigDir;
+    }
+
+    public static boolean isDualModelEnabled() {
+        return systemConfig != null && systemConfig.dual_model_enabled;
     }
 
     public static String readSystemPrompt() throws IOException {
@@ -167,73 +261,116 @@ public final class ConfigManager {
     }
 
     /**
-     * auto 时按 api_url 识别协议：
-     * Anthropic 用 /v1/messages（x-api-key），其余走 OpenAI 兼容的 /chat/completions。
+     * 读取提示词模板并替换知识库列表、人设占位符。
      */
-    public static String apiType() {
+    public static String readPrompt(String fileName) {
+        try {
+            String template = Files.readString(modConfigDir.resolve(fileName), StandardCharsets.UTF_8);
+            String files = String.join("\n", KnowledgeReader.listFiles());
+            if (files.isBlank()) {
+                files = "（无）";
+            }
+            String persona = readPersonaPrompt();
+            return template
+                    .replace("{KNOWLEDGE_FILE_LIST}", files)
+                    .replace("{PERSONA_PROMPT}", persona);
+        } catch (IOException e) {
+            throw new RuntimeException("读取提示词文件失败: " + fileName, e);
+        }
+    }
+
+    public static ApiProfile singleProfile() {
         ModConfig current = config;
-        String type = current == null || current.api_type == null
-                ? "auto"
-                : current.api_type.trim().toLowerCase(Locale.ROOT);
-        if ("anthropic".equals(type) || "claude".equals(type)) {
-            return "anthropic";
-        }
-        if ("deepseek".equals(type)) {
-            return "deepseek";
-        }
-        if ("openai".equals(type)) {
-            return "openai";
-        }
-        String url = current == null || current.api_url == null
-                ? ""
-                : current.api_url.toLowerCase(Locale.ROOT);
-        if (url.contains("anthropic.com") || url.endsWith("/messages")) {
-            return "anthropic";
-        }
-        if (url.contains("api.deepseek.com")) {
-            return "deepseek";
-        }
-        return "openai";
+        return new ApiProfile(
+                current.api_url,
+                current.api_key,
+                current.model,
+                current.api_type,
+                readPrompt(current.system_prompt_file),
+                current.enable_tools,
+                current.use_json_mode,
+                current.enable_thinking,
+                current.send_thinking_field,
+                current.reasoning_effort,
+                current.max_output_tokens,
+                current.thinking_budget_tokens
+        );
     }
 
-    public static boolean isAnthropic() {
-        return "anthropic".equals(apiType());
+    public static ApiProfile judgeProfile() {
+        ModConfig current = config;
+        SystemConfig.ApiSettings settings = systemConfig.judge;
+        return new ApiProfile(
+                or(settings.api_url, current.api_url),
+                or(settings.api_key, current.api_key),
+                or(settings.model, current.model),
+                or(settings.api_type, current.api_type),
+                readPrompt(or(settings.system_prompt_file, DEFAULT_JUDGE_PROMPT_FILE)),
+                false,
+                true,
+                false,
+                false,
+                "",
+                settings.max_output_tokens > 0 ? settings.max_output_tokens : 256,
+                0
+        );
     }
 
-    public static boolean isDeepSeek() {
-        return "deepseek".equals(apiType());
+    public static ApiProfile replyProfile() {
+        ModConfig current = config;
+        SystemConfig.ApiSettings settings = systemConfig.reply;
+        return new ApiProfile(
+                or(settings.api_url, current.api_url),
+                or(settings.api_key, current.api_key),
+                or(settings.model, current.model),
+                or(settings.api_type, current.api_type),
+                readPrompt(or(settings.system_prompt_file, DEFAULT_REPLY_PROMPT_FILE)),
+                current.enable_tools,
+                current.use_json_mode,
+                current.enable_thinking,
+                current.send_thinking_field,
+                current.reasoning_effort,
+                settings.max_output_tokens > 0 ? settings.max_output_tokens : current.max_output_tokens,
+                settings.thinking_budget_tokens > 0 ? settings.thinking_budget_tokens : current.thinking_budget_tokens
+        );
     }
 
-    public static String anthropicMessagesUrl() {
-        String url = config == null ? null : config.api_url;
-        if (url == null || url.isBlank()) {
-            url = "https://api.anthropic.com/v1/messages";
+    public static String usageModelName() {
+        if (!isDualModelEnabled()) {
+            return config.model;
         }
-        String normalized = url.trim();
-        while (normalized.endsWith("/")) {
-            normalized = normalized.substring(0, normalized.length() - 1);
+        return or(systemConfig.judge.model, config.model)
+                + "+" + or(systemConfig.reply.model, config.model);
+    }
+
+    public static boolean hasUsableApiKey() {
+        if (isDualModelEnabled()) {
+            String judgeKey = or(systemConfig.judge.api_key, config.api_key);
+            String replyKey = or(systemConfig.reply.api_key, config.api_key);
+            String judgeUrl = or(systemConfig.judge.api_url, config.api_url);
+            String replyUrl = or(systemConfig.reply.api_url, config.api_url);
+            return isKeyUsable(judgeKey, judgeUrl) && isKeyUsable(replyKey, replyUrl);
         }
-        if (normalized.endsWith("/messages")) {
-            return normalized;
-        }
-        if (normalized.endsWith("/v1")) {
-            return normalized + "/messages";
-        }
-        return normalized + "/v1/messages";
+        return isKeyUsable(config.api_key, config.api_url);
     }
 
     public static boolean isApiKeyConfigured() {
-        if (config == null || config.api_key == null) {
-            return false;
-        }
-        String key = config.api_key.trim();
-        if (!key.isEmpty() && !PLACEHOLDER_KEY.equals(key)) {
+        return hasUsableApiKey();
+    }
+
+    private static boolean isKeyUsable(String key, String url) {
+        String value = key == null ? "" : key.trim();
+        if (!value.isEmpty() && !PLACEHOLDER_KEY.equals(value)) {
             return true;
         }
         // 本地推理服务（Ollama / LM Studio / vLLM）通常不需要 Key
-        String url = config.api_url == null ? "" : config.api_url.toLowerCase(Locale.ROOT);
-        return url.contains("localhost")
-                || url.contains("127.0.0.1")
-                || url.contains("[::1]");
+        String normalized = url == null ? "" : url.toLowerCase(Locale.ROOT);
+        return normalized.contains("localhost")
+                || normalized.contains("127.0.0.1")
+                || normalized.contains("[::1]");
+    }
+
+    private static String or(String value, String fallback) {
+        return value == null || value.isBlank() ? fallback : value;
     }
 }

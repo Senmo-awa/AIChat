@@ -1,6 +1,8 @@
 package com.example.aichat.ai;
 
+import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
+import com.example.aichat.config.Endpoints;
 import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
@@ -30,22 +32,15 @@ public final class OpenAiClient {
     private OpenAiClient() {
     }
 
-    public static CompletableFuture<AiResult> ask(ChatContext ctx) {
-        String systemPrompt;
-        try {
-            systemPrompt = AiClient.buildSystemPrompt();
-        } catch (Exception e) {
-            return CompletableFuture.failedFuture(e);
-        }
-
+    public static CompletableFuture<RawResult> ask(ApiProfile profile, String userMessage) {
         JsonArray messages = new JsonArray();
-        messages.add(msg("system", systemPrompt));
-        messages.add(msg("user", ctx.toUserMessage()));
+        messages.add(msg("system", profile.systemPrompt()));
+        messages.add(msg("user", userMessage));
 
-        JsonObject body = baseBody();
+        JsonObject body = baseBody(profile);
         body.add("messages", messages);
 
-        return send(body).thenCompose(first -> {
+        return send(profile, body).thenCompose(first -> {
             TokenUsage firstUsage = parseUsage(first);
             JsonObject message = firstMessage(first);
             JsonArray toolCalls = message.has("tool_calls")
@@ -53,7 +48,7 @@ public final class OpenAiClient {
 
             if (toolCalls == null || toolCalls.isEmpty()) {
                 return CompletableFuture.completedFuture(
-                        AiClient.parseReply(contentOf(message), firstUsage));
+                        new RawResult(contentOf(message), firstUsage));
             }
 
             JsonObject toolCall = toolCalls.get(0).getAsJsonObject();
@@ -77,9 +72,9 @@ public final class OpenAiClient {
             toolMsg.addProperty("content", fileContent);
             messages.add(toolMsg);
 
-            JsonObject secondBody = baseBody();
+            JsonObject secondBody = baseBody(profile);
             secondBody.add("messages", messages);
-            return send(secondBody).thenApply(resp -> AiClient.parseReply(
+            return send(profile, secondBody).thenApply(resp -> new RawResult(
                     contentOf(firstMessage(resp)),
                     firstUsage.plus(parseUsage(resp))
             ));
@@ -119,37 +114,30 @@ public final class OpenAiClient {
         return content == null || content.isJsonNull() ? null : content.getAsString();
     }
 
-    private static JsonObject baseBody() {
+    private static JsonObject baseBody(ApiProfile profile) {
         JsonObject body = new JsonObject();
-        body.addProperty("model", ConfigManager.get().model);
+        body.addProperty("model", profile.model());
         body.addProperty("stream", false);
 
         // 默认不发送 thinking：部分平台收到关闭思考的参数后不再返回 tool_calls。
-        // 需要显式控制思考时再打开 send_thinking_field。
-        boolean sendThinking = ConfigManager.get().send_thinking_field
-                || ConfigManager.get().enable_thinking;
-        if (sendThinking) {
+        if (profile.sendThinkingField() || profile.thinkingEnabled()) {
             JsonObject thinking = new JsonObject();
-            thinking.addProperty("type",
-                    ConfigManager.get().enable_thinking ? "enabled" : "disabled");
+            thinking.addProperty("type", profile.thinkingEnabled() ? "enabled" : "disabled");
             body.add("thinking", thinking);
         }
 
-        String effort = ConfigManager.get().reasoning_effort;
-        if (effort != null && !effort.isBlank()) {
-            body.addProperty("reasoning_effort", effort.trim());
+        if (profile.reasoningEffort() != null && !profile.reasoningEffort().isBlank()) {
+            body.addProperty("reasoning_effort", profile.reasoningEffort().trim());
         }
 
-        int maxTokens = ConfigManager.get().max_output_tokens;
-        if (maxTokens > 0) {
-            body.addProperty("max_tokens", maxTokens);
+        if (profile.maxOutputTokens() > 0) {
+            body.addProperty("max_tokens", profile.maxOutputTokens());
         }
 
-        boolean toolsEnabled = ConfigManager.get().enable_tools;
+        boolean toolsEnabled = profile.toolsEnabled();
 
-        // 部分 OpenAI 兼容平台在 json_object 模式下不返回 tool_calls，
-        // 模型会直接编答案。启用工具时改为只靠系统提示词约束 JSON。
-        if (ConfigManager.get().use_json_mode && !toolsEnabled) {
+        // 部分平台在 json_object 模式下不返回 tool_calls，启用工具时不发送 response_format。
+        if (profile.jsonMode() && !toolsEnabled) {
             JsonObject format = new JsonObject();
             format.addProperty("type", "json_object");
             body.add("response_format", format);
@@ -191,12 +179,12 @@ public final class OpenAiClient {
         return tools;
     }
 
-    private static CompletableFuture<JsonObject> send(JsonObject body) {
+    private static CompletableFuture<JsonObject> send(ApiProfile profile, JsonObject body) {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(ConfigManager.chatCompletionsUrl()))
+                .uri(URI.create(Endpoints.chatCompletions(profile.apiUrl())))
                 .timeout(Duration.ofSeconds(Math.max(5, ConfigManager.get().request_timeout_seconds)))
                 .header("Content-Type", "application/json")
-                .header("Authorization", "Bearer " + ConfigManager.get().api_key)
+                .header("Authorization", "Bearer " + profile.apiKey())
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
                 .build();
 
@@ -215,9 +203,6 @@ public final class OpenAiClient {
                 });
     }
 
-    /**
-     * DeepSeek 兼容 OpenAI 的 usage 字段；缺失时返回 0，不影响回复。
-     */
     private static TokenUsage parseUsage(JsonObject response) {
         JsonElement element = response.get("usage");
         if (element == null || !element.isJsonObject()) {

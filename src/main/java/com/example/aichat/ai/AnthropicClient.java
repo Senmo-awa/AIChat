@@ -1,6 +1,8 @@
 package com.example.aichat.ai;
 
+import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
+import com.example.aichat.config.Endpoints;
 import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
@@ -33,25 +35,19 @@ public final class AnthropicClient {
     private AnthropicClient() {
     }
 
-    public static CompletableFuture<AiResult> ask(ChatContext ctx) {
-        String systemPrompt;
-        try {
-            systemPrompt = AiClient.buildSystemPrompt();
-        } catch (Exception e) {
-            return CompletableFuture.failedFuture(e);
-        }
-
+    public static CompletableFuture<RawResult> ask(ApiProfile profile, String userMessage) {
         JsonArray messages = new JsonArray();
-        messages.add(msg("user", ctx.toUserMessage()));
+        messages.add(msg("user", userMessage));
 
-        JsonObject body = baseBody(systemPrompt);
+        JsonObject body = baseBody(profile);
         body.add("messages", messages);
 
-        return send(body).thenCompose(first -> {
+        return send(profile, body).thenCompose(first -> {
             TokenUsage firstUsage = parseUsage(first);
             JsonObject toolUse = findToolUse(first);
             if (toolUse == null) {
-                return CompletableFuture.completedFuture(extractReply(first, firstUsage));
+                return CompletableFuture.completedFuture(
+                        new RawResult(extractText(first), firstUsage));
             }
 
             String toolId = stringOf(toolUse, "id");
@@ -85,26 +81,28 @@ public final class AnthropicClient {
             user.add("content", resultBlocks);
             messages.add(user);
 
-            JsonObject secondBody = baseBody(systemPrompt);
+            JsonObject secondBody = baseBody(profile);
             secondBody.add("messages", messages);
-            return send(secondBody).thenApply(resp ->
-                    extractReply(resp, firstUsage.plus(parseUsage(resp))));
+            return send(profile, secondBody).thenApply(resp -> new RawResult(
+                    extractText(resp),
+                    firstUsage.plus(parseUsage(resp))
+            ));
         });
     }
 
-    private static JsonObject baseBody(String systemPrompt) {
+    private static JsonObject baseBody(ApiProfile profile) {
         JsonObject body = new JsonObject();
-        body.addProperty("model", ConfigManager.get().model);
+        body.addProperty("model", profile.model());
 
-        int maxTokens = ConfigManager.get().max_output_tokens;
+        int maxTokens = profile.maxOutputTokens();
         if (maxTokens <= 0) {
             maxTokens = DEFAULT_MAX_TOKENS;
         }
         body.addProperty("max_tokens", maxTokens);
-        body.addProperty("system", systemPrompt);
+        body.addProperty("system", profile.systemPrompt());
 
-        if (ConfigManager.get().enable_thinking) {
-            int budget = ConfigManager.get().thinking_budget_tokens;
+        if (profile.thinkingEnabled()) {
+            int budget = profile.thinkingBudgetTokens();
             if (budget <= 0) {
                 budget = 1024;
             }
@@ -118,7 +116,7 @@ public final class AnthropicClient {
             }
         }
 
-        if (ConfigManager.get().enable_tools) {
+        if (profile.toolsEnabled()) {
             body.add("tools", toolDefinitions());
         }
         return body;
@@ -180,7 +178,7 @@ public final class AnthropicClient {
         return name == null || name.isJsonNull() ? null : name.getAsString();
     }
 
-    private static AiResult extractReply(JsonObject response, TokenUsage usage) {
+    private static String extractText(JsonObject response) {
         StringBuilder text = new StringBuilder();
         JsonElement contentElement = response.get("content");
         if (contentElement != null && contentElement.isJsonArray()) {
@@ -199,7 +197,7 @@ public final class AnthropicClient {
                 }
             }
         }
-        return AiClient.parseReply(text.toString(), usage);
+        return text.toString();
     }
 
     private static TokenUsage parseUsage(JsonObject response) {
@@ -223,12 +221,12 @@ public final class AnthropicClient {
         return element == null || element.isJsonNull() ? "" : element.getAsString();
     }
 
-    private static CompletableFuture<JsonObject> send(JsonObject body) {
+    private static CompletableFuture<JsonObject> send(ApiProfile profile, JsonObject body) {
         HttpRequest request = HttpRequest.newBuilder()
-                .uri(URI.create(ConfigManager.anthropicMessagesUrl()))
+                .uri(URI.create(Endpoints.messages(profile.apiUrl())))
                 .timeout(Duration.ofSeconds(Math.max(5, ConfigManager.get().request_timeout_seconds)))
                 .header("Content-Type", "application/json")
-                .header("x-api-key", ConfigManager.get().api_key)
+                .header("x-api-key", profile.apiKey())
                 .header("anthropic-version", ANTHROPIC_VERSION)
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
                 .build();

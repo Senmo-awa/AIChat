@@ -59,6 +59,11 @@ gradlew.bat build
 | `send_thinking_field` | 是否发送 `thinking` 字段，默认 `false`；开启后部分平台（如千问 MaaS）会不返回 `tool_calls` |
 | `max_output_tokens` | 最大输出 token，`0` 表示不发送（Anthropic 默认 4096） |
 | `thinking_budget_tokens` | Anthropic 思考预算，默认 1024 |
+| `config_version` | 配置文件版本，升级时自动补齐新字段 |
+| `buffer_enabled` | 是否启用消息缓冲（防抖合并，省 token），默认 `true` |
+| `buffer_delay_seconds` | 最后一条消息后等待秒数，默认 5 |
+| `buffer_max_messages` | 缓冲区最多消息条数，默认 10，满了立即发送 |
+| `buffer_max_chars` | 缓冲区最多字符数，默认 500，满了立即发送 |
 
 运行期状态保存在 `config/aichat/state.json`（全局开关、调试模式、禁止列表、玩家模式），
 token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查看。
@@ -108,12 +113,37 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 | 命令 | 说明 |
 |---|---|
 | `/aichat token` | 显示最近 7 天 token 用量（按天汇总） |
+| `/aichat token clear` | 清空统计并重新计算（原文件按时间戳备份） |
+| `/aichat reload` | 热重载 `config.json` 和 `system.json` |
 | `/aichat enable` / `/aichat disable` | 全局开启/关闭 AI 聊天 |
 | `/aichat debug` | 切换聊天框内的 token 用量显示（仅管理员可见） |
 | `/aichat ban <玩家>` | 该玩家的发言不再发给 AI；离线玩家也可操作 |
 | `/aichat unban <玩家>` | 解除禁止 |
 | `/aichat banlist` | 查看禁止列表 |
-| `/reload` | 热重载 `config.json`（同时保留原版数据包重载） |
+
+## 消息缓冲
+
+默认开启。玩家发言后等待 `buffer_delay_seconds`（默认 5 秒）再请求 AI：
+
+- 等待期间任何新事件（聊天、加入、退出）都会重置计时器并进入缓冲区；
+- 缓冲区达到 `buffer_max_messages` 或 `buffer_max_chars` 时立即发送；
+- 多条事件会合并成一条请求，减少 API 调用次数和 token 消耗；
+- 被 ban、`off`、`onlyread` 的玩家事件在进入缓冲区前就会被拦截。
+
+## 双模型模式（可选）
+
+`system.json` 控制判断模型与回复模型分离，默认关闭。开启后：
+
+1. judge 模型只看事件，返回 `{"action":"reply"}` 或 `{"action":"ignore"}`；
+2. 需要回复时再调用 reply 模型生成内容，reply 模型可以独立配置知识库工具。
+
+`system.json` 中的 `judge` / `reply` 可分别填写 `api_url`、`api_key`、`model`、`api_type`、`system_prompt_file`。
+留空的字段会回退到 `config.json` 的同名配置。两份默认提示词为 `judge_prompt.txt` 和 `reply_prompt.txt`。
+
+## 配置升级
+
+`config.json` 与 `system.json` 都带版本号。模组启动或执行 `/aichat reload` 时，
+若文件版本低于当前版本，会先备份为 `.v<版本>.bak`，再用默认模板补齐缺失字段，已有值不会被覆盖。
 
 ## 行为
 

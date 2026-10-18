@@ -19,8 +19,14 @@ package com.example.aichat.config;
  * reasoning_effort: low/medium/high 等；留空则不发送
  * max_output_tokens: 最大输出 token；0 表示不发送（Anthropic 用默认值）
  * thinking_budget_tokens: Anthropic 思考预算
+ * config_version: 配置文件版本，用于升级时自动补齐新字段
+ * buffer_enabled: 是否启用消息缓冲（防抖合并，省 token）
+ * buffer_delay_seconds: 最后一条消息后等待多少秒再发送
+ * buffer_max_messages: 缓冲区最多条数，满了立即发送
+ * buffer_max_chars: 缓冲区最多字符数，满了立即发送
  */
 public class ModConfig {
+    public int config_version = 2;
     public String api_url = "https://api.deepseek.com/chat/completions";
     public String api_key = "";
     public String model = "deepseek-flash";
@@ -44,4 +50,8 @@ public class ModConfig {
     public boolean send_thinking_field = false;
     public int max_output_tokens = 0;
     public int thinking_budget_tokens = 1024;
+    public boolean buffer_enabled = true;
+    public int buffer_delay_seconds = 5;
+    public int buffer_max_messages = 10;
+    public int buffer_max_chars = 500;
 }

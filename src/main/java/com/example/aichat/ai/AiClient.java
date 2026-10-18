@@ -1,49 +1,79 @@
 package com.example.aichat.ai;
 
 import com.example.aichat.AiChatMod;
+import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
-import com.example.aichat.knowledge.KnowledgeReader;
+import com.example.aichat.config.Endpoints;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
-import java.io.IOException;
 import java.util.concurrent.CompletableFuture;
 
 /**
- * 统一入口：按 api_type / api_url 选择 OpenAI 兼容协议或 Anthropic Messages 协议。
+ * 统一入口：
+ * - 单模型模式：一次调用同时判断并生成回复。
+ * - 双模型模式：judge 只判断是否回复，reply 负责生成内容，两套配置互相独立。
  */
 public final class AiClient {
     private AiClient() {
     }
 
     public static CompletableFuture<AiResult> ask(ChatContext ctx) {
-        if (ConfigManager.isAnthropic()) {
-            return AnthropicClient.ask(ctx);
+        String userMessage = ctx.toUserMessage();
+
+        if (!ConfigManager.isDualModelEnabled()) {
+            return dispatch(ConfigManager.singleProfile(), userMessage)
+                    .thenApply(raw -> parseReply(raw.text(), raw.usage()));
         }
-        return OpenAiClient.ask(ctx);
+
+        ApiProfile judgeProfile = ConfigManager.judgeProfile();
+        return dispatch(judgeProfile, userMessage).thenCompose(judgeRaw -> {
+            TokenUsage judgeUsage = judgeRaw.usage();
+            if (!judgeSaysReply(judgeRaw.text())) {
+                return CompletableFuture.completedFuture(new AiResult(false, null, judgeUsage));
+            }
+
+            ApiProfile replyProfile = ConfigManager.replyProfile();
+            return dispatch(replyProfile, userMessage).thenApply(replyRaw -> {
+                AiResult reply = parseReplyContent(replyRaw.text(), replyRaw.usage());
+                return new AiResult(
+                        reply.reply(),
+                        reply.content(),
+                        judgeUsage.plus(replyRaw.usage())
+                );
+            });
+        });
     }
 
-    static String buildSystemPrompt() throws IOException {
-        String files = String.join("\n", KnowledgeReader.listFiles());
-        if (files.isBlank()) {
-            files = "（无）";
+    private static CompletableFuture<RawResult> dispatch(ApiProfile profile, String userMessage) {
+        if ("anthropic".equals(Endpoints.resolveType(profile.apiType(), profile.apiUrl()))) {
+            return AnthropicClient.ask(profile, userMessage);
         }
-        String persona;
+        return OpenAiClient.ask(profile, userMessage);
+    }
+
+    static boolean judgeSaysReply(String content) {
         try {
-            persona = ConfigManager.readPersonaPrompt();
+            if (content == null || content.isBlank()) {
+                return false;
+            }
+            JsonObject json = JsonParser.parseString(content).getAsJsonObject();
+            String action = json.has("action") ? json.get("action").getAsString() : "";
+            if ("reply".equals(action)) {
+                return true;
+            }
+            JsonElement reply = json.get("reply");
+            return reply != null && reply.isJsonPrimitive() && reply.getAsBoolean();
         } catch (Exception e) {
-            persona = "";
-            AiChatMod.LOGGER.warn("读取人设文件失败: {}", e.getMessage());
+            AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理");
+            return false;
         }
-        return ConfigManager.readSystemPrompt()
-                .replace("{KNOWLEDGE_FILE_LIST}", files)
-                .replace("{PERSONA_PROMPT}", persona);
     }
 
     /**
-     * 两个协议最终都归一成 {"action":"reply","content":"..."} 或 {"action":"ignore"}。
+     * 单模型：要求 {"action":"reply","content":"..."} 或 {"action":"ignore"}。
      */
     static AiResult parseReply(String content, TokenUsage usage) {
         try {
@@ -66,6 +96,31 @@ public final class AiClient {
         } catch (Exception e) {
             AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略");
             return new AiResult(false, null, usage);
+        }
+    }
+
+    /**
+     * 双模型的回复阶段：只取 content；模型直接输出纯文本时也能用。
+     */
+    static AiResult parseReplyContent(String content, TokenUsage usage) {
+        if (content == null || content.isBlank()) {
+            return new AiResult(false, null, usage);
+        }
+        try {
+            JsonObject json = JsonParser.parseString(content).getAsJsonObject();
+            JsonElement reply = json.get("content");
+            if (reply == null || reply.isJsonNull()) {
+                return new AiResult(false, null, usage);
+            }
+            String text = reply.getAsString().trim();
+            return text.isEmpty()
+                    ? new AiResult(false, null, usage)
+                    : new AiResult(true, text, usage);
+        } catch (Exception ignored) {
+            String text = content.trim();
+            return text.isEmpty()
+                    ? new AiResult(false, null, usage)
+                    : new AiResult(true, text, usage);
         }
     }
 

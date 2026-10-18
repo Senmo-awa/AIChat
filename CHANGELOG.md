@@ -1,5 +1,21 @@
 # Changelog
 
+## 1.5.0 - 2026-10-18
+
+### Added
+
+- 消息缓冲：最后一条消息后等待 5 秒再请求 AI，期间的新事件重置计时器并合并发送；默认 10 条 / 500 字符上限，满则立即发送。相关参数可在 `config.json` 配置。
+- 双模型模式：`system.json` 中可分别配置判断模型（judge）和回复模型（reply），默认关闭；两套 API 地址、Key、模型互相独立，留空时回退到 `config.json`。
+- 新增默认提示词 `judge_prompt.txt`（只判断是否回复）和 `reply_prompt.txt`（生成回复）。
+- `/aichat token clear`：清空 token 统计并重新计算，旧文件按时间戳备份。
+- `/aichat reload`：热重载 `config.json` 与 `system.json`。
+- `config.json` / `system.json` 增加版本号，升级时自动备份并补齐缺失字段。
+
+### Changed
+
+- `/reload` 改为 `/aichat reload`，不再覆盖原版 `/reload` 命令。
+- 协议层改为由 `ApiProfile` 驱动，供单模型与双模型共用。
+
 ## 1.4.0 - 2026-10-18
 
 ### Added

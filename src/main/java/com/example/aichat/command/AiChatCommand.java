@@ -10,7 +10,6 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
-import net.minecraft.server.commands.ReloadCommand;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.List;
@@ -33,7 +32,9 @@ public final class AiChatCommand {
                 .executes(ctx -> showHelp(ctx.getSource()))
                 .then(Commands.literal("token")
                         .requires(ADMIN)
-                        .executes(ctx -> showTokens(ctx.getSource())))
+                        .executes(ctx -> showTokens(ctx.getSource()))
+                        .then(Commands.literal("clear")
+                                .executes(ctx -> clearTokens(ctx.getSource()))))
                 .then(Commands.literal("enable")
                         .requires(ADMIN)
                         .executes(ctx -> setChatEnabled(ctx.getSource(), true)))
@@ -64,12 +65,10 @@ public final class AiChatCommand {
                         .executes(ctx -> setMode(ctx.getSource(), PlayerMode.OFF)))
                 .then(Commands.literal("onlyread")
                         .executes(ctx -> setMode(ctx.getSource(), PlayerMode.ONLY_READ)))
+                .then(Commands.literal("reload")
+                        .requires(ADMIN)
+                        .executes(ctx -> reload(ctx.getSource())))
         );
-
-        // 覆盖原版 /reload 的执行体：先热重载模组配置，再保留原版数据包重载。
-        dispatcher.register(Commands.literal("reload")
-                .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
-                .executes(ctx -> reload(ctx.getSource())));
     }
 
     private static int reload(CommandSourceStack source) {
@@ -80,11 +79,16 @@ public final class AiChatCommand {
             return 0;
         }
         source.sendSuccess(() -> Component.literal("AI Chat 配置已重新加载。"), true);
-        ReloadCommand.reloadPacks(
-                source.getServer().getPackRepository().getSelectedIds(),
-                source
-        );
         return 1;
+    }
+
+    private static int clearTokens(CommandSourceStack source) {
+        boolean cleared = UsageStore.clear();
+        String message = cleared
+                ? "token 用量已清空，重新开始统计。"
+                : "没有可清空的 token 记录。";
+        source.sendSuccess(() -> Component.literal(message), true);
+        return cleared ? 1 : 0;
     }
 
     private static int showHelp(CommandSourceStack source) {
@@ -92,6 +96,8 @@ public final class AiChatCommand {
                 /aichat on|off|onlyread —— 设置自己的 AI 聊天状态
                 管理员命令：
                 /aichat token —— 最近 7 天 token 用量
+                /aichat token clear —— 清空统计并重新计算
+                /aichat reload —— 热重载配置文件
                 /aichat enable|disable —— 全局开启/关闭 AI 聊天
                 /aichat debug —— 切换聊天框内的 token 用量显示
                 /aichat ban <玩家> —— 不再回复该玩家（unban 解除，banlist 查看）""";

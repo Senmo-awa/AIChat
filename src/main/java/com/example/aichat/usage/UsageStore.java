@@ -12,10 +12,13 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.time.Instant;
 import java.time.LocalDate;
+import java.time.LocalDateTime;
 import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -64,6 +67,31 @@ public final class UsageStore {
                 );
             } catch (IOException e) {
                 AiChatMod.LOGGER.warn("写入 token 用量失败: {}", e.getMessage());
+            }
+        }
+    }
+
+    /**
+     * 清空统计：把当前 usage.jsonl 改名备份，后续记录从零开始。
+     */
+    public static boolean clear() {
+        synchronized (LOCK) {
+            Path path = file;
+            if (path == null || !Files.exists(path)) {
+                return false;
+            }
+            try {
+                String stamp = LocalDateTime.now()
+                        .format(DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss"));
+                Files.move(
+                        path,
+                        path.resolveSibling("usage-" + stamp + ".jsonl"),
+                        StandardCopyOption.REPLACE_EXISTING
+                );
+                return true;
+            } catch (IOException e) {
+                AiChatMod.LOGGER.warn("清空 token 用量失败: {}", e.getMessage());
+                return false;
             }
         }
     }
