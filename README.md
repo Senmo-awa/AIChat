@@ -211,3 +211,8 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 
 - 上下文条数由 `max_context_messages` 控制，调大能记住更多内容，但每次请求的 prompt token 也会增加。
 - API Key 以明文保存在 `config/aichat/config.json` 与 `system.json`，请限制配置文件访问权限。
+
+## 许可证
+
+本项目采用 [MIT License](LICENSE) 开源。你可以自由使用、修改、分发，甚至用于商业项目，只需保留版权声明。
+

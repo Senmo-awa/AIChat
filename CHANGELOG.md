@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- 添加 MIT 许可证（`LICENSE`），README 增加许可证说明。
+
 ## 1.5.1 - 2026-10-18
 
 ### Fixed
