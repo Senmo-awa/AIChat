@@ -1,6 +1,6 @@
 # AI Chat
 
-基于 DeepSeek 的 Minecraft 服务端聊天模组。AI 以可配置前缀参与聊天，并按需读取知识库文件。
+Minecraft 服务端聊天模组，支持 OpenAI 兼容与 Anthropic Messages 两类 API。AI 以可配置前缀参与聊天，可按需读取知识库，并支持消息缓冲、上下文记忆与双模型模式。
 
 ## 环境要求
 
@@ -31,18 +31,18 @@ gradlew.bat build
 
 1. 将模组 jar 与匹配 26.1.2 的 Fabric API 放入服务端 `mods/` 目录。
 2. 启动服务端。首次启动会在 `config/aichat/` 生成：
-   - `config.json`
-   - `system_prompt.txt`
-   - `persona_prompt.txt`
+   - `config.json`、`system.json`
+   - `system_prompt.txt`、`persona_prompt.txt`
+   - `judge_prompt.txt`、`reply_prompt.txt`
    - `knowledge/`
-3. 在 `config.json` 中填写 `api_key`，重启服务端生效。修改配置无需重新构建。
+3. 在 `config.json` 中填写 `api_key`（双模型模式则填写 `system.json`），重启服务端或执行 `/aichat reload` 生效。修改配置无需重新构建。
 
 ## 配置
 
 | 字段 | 说明 |
 |---|---|
 | `api_url` | Chat Completions 端点；也可只填 base URL（如 `https://xxx/v1`），模组会自动补 `/chat/completions` |
-| `api_key` | DeepSeek API Key；保持占位值时模组跳过请求 |
+| `api_key` | API Key；保持占位值时模组跳过请求（本地服务可留空） |
 | `model` | 模型名称，默认 `deepseek-flash` |
 | `system_prompt_file` | 系统提示词文件名，相对 `config/aichat/` |
 | `persona_prompt_file` | 人设提示词文件名，相对 `config/aichat/` |
@@ -130,15 +130,54 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - 多条事件会合并成一条请求，减少 API 调用次数和 token 消耗；
 - 被 ban、`off`、`onlyread` 的玩家事件在进入缓冲区前就会被拦截。
 
-## 双模型模式（可选）
+## 双模型模式（可选，默认关闭）
 
-`system.json` 控制判断模型与回复模型分离，默认关闭。开启后：
+作用：先用一个便宜、快速的模型判断“要不要回复”，需要回复时再调用另一个模型生成内容。
+两套 API 完全独立，可以指向不同平台、使用不同 Key 和模型。
 
-1. judge 模型只看事件，返回 `{"action":"reply"}` 或 `{"action":"ignore"}`；
-2. 需要回复时再调用 reply 模型生成内容，reply 模型可以独立配置知识库工具。
+### 开启步骤
 
-`system.json` 中的 `judge` / `reply` 可分别填写 `api_url`、`api_key`、`model`、`api_type`、`system_prompt_file`。
-留空的字段会回退到 `config.json` 的同名配置。两份默认提示词为 `judge_prompt.txt` 和 `reply_prompt.txt`。
+1. 打开 `config/aichat/system.json`。
+2. 把 `"dual_model_enabled": false` 改成 `true`。
+3. 填写 `judge`（判断是否回复）和 `reply`（生成回复）两套配置。
+4. 执行 `/aichat reload`，或重启服务端。
+5. 用 `/aichat token` 观察用量；终端日志会分别记录两个模型的请求。
+
+### 配置示例
+
+```json
+{
+  "version": 1,
+  "dual_model_enabled": true,
+  "judge": {
+    "api_url": "https://api.deepseek.com",
+    "api_key": "sk-judge-key",
+    "model": "deepseek-flash",
+    "api_type": "auto",
+    "system_prompt_file": "judge_prompt.txt",
+    "max_output_tokens": 256,
+    "thinking_budget_tokens": 1024
+  },
+  "reply": {
+    "api_url": "https://api.moonshot.cn/v1",
+    "api_key": "sk-reply-key",
+    "model": "kimi-k3",
+    "api_type": "auto",
+    "system_prompt_file": "reply_prompt.txt",
+    "max_output_tokens": 0,
+    "thinking_budget_tokens": 1024
+  }
+}
+```
+
+### 说明
+
+- `judge` 只返回 `{"action":"reply"}` 或 `{"action":"ignore"}`，不发送工具定义，适合用便宜的小模型。
+- `reply` 只在需要回复时调用，负责生成内容；是否发送知识库工具由 `config.json` 的 `enable_tools` 控制。
+- `api_url` / `api_key` / `model` / `api_type` 留空时自动回退到 `config.json` 的同名配置，因此可以只填一套先跑通。
+- 两份默认提示词是 `judge_prompt.txt` 和 `reply_prompt.txt`，可以直接编辑。
+- 判断模型只看当前事件；回复模型会收到最近 `max_context_messages` 条历史。
+- 关闭双模型模式只需把 `dual_model_enabled` 改回 `false`，然后执行 `/aichat reload`。
 
 ## 配置升级
 
@@ -148,25 +187,27 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 ## 行为
 
 - 玩家聊天会触发一次判断；模型返回 `{"action":"reply","content":"..."}` 时广播回复，返回 `{"action":"ignore"}` 时静默。
+- 最近 `max_context_messages` 条玩家事件与 AI 回复会作为历史消息随请求发送，AI 可以记住前几句聊天。
 - 每次请求的 token 用量会写入服务端日志；`/aichat debug` 开启后，管理员还会在聊天框里看到灰色用量行。
 - 消息在发给 AI 之前先经过模组端校验：被 ban、全局关闭、玩家 `off`/`onlyread` 时直接拦截，不会产生 API 请求。
 - AI 广播会逐个玩家投递：`off` 玩家收不到，`onlyread` 和 `on` 玩家正常接收。
 - 玩家加入时发送欢迎消息；退出默认忽略。可在 `system_prompt.txt` 中调整。
 - `/say`、`/me` 等命令消息不会触发 AI。
 - 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；文件读取受白名单和路径校验限制，最多两轮请求。`enable_tools` 为 `false` 时不发送工具定义，模型不会读取知识库。
-- `enable_thinking` 控制请求里的 `thinking` 字段，默认 `false`（关闭深度思考）。
-- `/reload` 重新读取 `config.json`，失败时保留原配置并提示错误。
+- `/aichat reload` 重新读取 `config.json` 与 `system.json`，失败时保留原配置并提示错误。
 - 不创建假玩家，不执行游戏操作。
 
 ## 测试
 
 1. 配置 API Key，启动服务端，确认日志出现 `AI Chat 已加载`。
 2. 发送普通聊天，确认收到带前缀的回复。
-3. 执行 `/say hi`，确认不触发 AI。
-4. 玩家加入，确认收到欢迎消息。
-5. 在 `knowledge/` 添加 `server_info.txt`，询问相关内容，确认模型读取文件并回答。
+3. 连续对话两句，确认 AI 能引用上一句（上下文记忆）。
+4. 执行 `/say hi`，确认不触发 AI。
+5. 玩家加入，确认收到欢迎消息。
+6. 在 `knowledge/` 添加 `server_info.txt`，询问相关内容，确认模型读取文件并回答。
+7. 开启双模型模式后再次对话，确认 judge 与 reply 的 token 都记录在日志中。
 
 ## 说明
 
-- 聊天上下文窗口已记录，但尚未加入 API 请求。
-- API Key 以明文保存在 `config/aichat/config.json`，请限制配置文件访问权限。
+- 上下文条数由 `max_context_messages` 控制，调大能记住更多内容，但每次请求的 prompt token 也会增加。
+- API Key 以明文保存在 `config/aichat/config.json` 与 `system.json`，请限制配置文件访问权限。
