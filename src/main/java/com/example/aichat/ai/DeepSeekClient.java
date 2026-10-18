@@ -3,6 +3,7 @@ package com.example.aichat.ai;
 import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.knowledge.KnowledgeReader;
+import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -23,8 +24,10 @@ public final class DeepSeekClient {
             .connectTimeout(Duration.ofSeconds(10))
             .build();
 
-    public record AiResult(boolean reply, String content) {
-        public static final AiResult IGNORE = new AiResult(false, null);
+    /**
+     * usage 是本次对话（含 tool call 的第二轮请求）累计的 token 用量。
+     */
+    public record AiResult(boolean reply, String content, TokenUsage usage) {
     }
 
     private DeepSeekClient() {
@@ -59,12 +62,13 @@ public final class DeepSeekClient {
         body.add("messages", messages);
 
         return send(body).thenCompose(first -> {
+            TokenUsage firstUsage = parseUsage(first);
             JsonObject message = firstMessage(first);
             JsonArray toolCalls = message.has("tool_calls")
                     ? message.getAsJsonArray("tool_calls") : null;
 
             if (toolCalls == null || toolCalls.isEmpty()) {
-                return CompletableFuture.completedFuture(parseContent(message));
+                return CompletableFuture.completedFuture(parseContent(message, firstUsage));
             }
 
             JsonObject toolCall = toolCalls.get(0).getAsJsonObject();
@@ -90,7 +94,10 @@ public final class DeepSeekClient {
 
             JsonObject secondBody = baseBody();
             secondBody.add("messages", messages);
-            return send(secondBody).thenApply(resp -> parseContent(firstMessage(resp)));
+            return send(secondBody).thenApply(resp -> parseContent(
+                    firstMessage(resp),
+                    firstUsage.plus(parseUsage(resp))
+            ));
         });
     }
 
@@ -194,28 +201,53 @@ public final class DeepSeekClient {
                 });
     }
 
-    private static AiResult parseContent(JsonObject message) {
+    private static AiResult parseContent(JsonObject message, TokenUsage usage) {
         try {
             JsonElement contentElement = message.get("content");
             if (contentElement == null || contentElement.isJsonNull()) {
-                return AiResult.IGNORE;
+                return new AiResult(false, null, usage);
             }
             String content = contentElement.getAsString();
             JsonObject json = JsonParser.parseString(content).getAsJsonObject();
             String action = json.has("action") ? json.get("action").getAsString() : "";
             if (!"reply".equals(action)) {
-                return AiResult.IGNORE;
+                return new AiResult(false, null, usage);
             }
             JsonElement reply = json.get("content");
             if (reply == null || reply.isJsonNull()) {
-                return AiResult.IGNORE;
+                return new AiResult(false, null, usage);
             }
             String text = reply.getAsString().trim();
-            return text.isEmpty() ? AiResult.IGNORE : new AiResult(true, text);
+            return text.isEmpty()
+                    ? new AiResult(false, null, usage)
+                    : new AiResult(true, text, usage);
         } catch (Exception e) {
             AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略");
-            return AiResult.IGNORE;
+            return new AiResult(false, null, usage);
         }
+    }
+
+    /**
+     * DeepSeek 兼容 OpenAI 的 usage 字段；缺失时返回 0，不影响回复。
+     */
+    private static TokenUsage parseUsage(JsonObject response) {
+        JsonElement element = response.get("usage");
+        if (element == null || !element.isJsonObject()) {
+            return TokenUsage.ZERO;
+        }
+        JsonObject usage = element.getAsJsonObject();
+        long prompt = readLong(usage, "prompt_tokens");
+        long completion = readLong(usage, "completion_tokens");
+        long total = readLong(usage, "total_tokens");
+        if (total <= 0) {
+            total = prompt + completion;
+        }
+        return new TokenUsage(prompt, completion, total);
+    }
+
+    private static long readLong(JsonObject object, String field) {
+        JsonElement element = object.get(field);
+        return element == null || element.isJsonNull() ? 0L : element.getAsLong();
     }
 
     private static JsonObject msg(String role, String content) {
