@@ -117,8 +117,8 @@ public final class OpenAiClient {
     }
 
     private static String contentOf(JsonObject message) {
-        JsonElement content = message.get("content");
-        return content == null || content.isJsonNull() ? null : content.getAsString();
+        // 部分兼容端点会把 content 返回成 [{type,text}] 数组，统一交给 AiClient 处理。
+        return AiClient.textOf(message.get("content"));
     }
 
     private static JsonObject baseBody(ApiProfile profile) {

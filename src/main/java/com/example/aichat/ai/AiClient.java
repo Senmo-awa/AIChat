@@ -57,47 +57,58 @@ public final class AiClient {
         return OpenAiClient.ask(profile, userMessage, history);
     }
 
+    private static final int LOG_PREVIEW_LENGTH = 200;
+
     static boolean judgeSaysReply(String content) {
-        try {
-            if (content == null || content.isBlank()) {
-                return false;
+        String jsonText = extractJson(content);
+        if (jsonText == null) {
+            if (content != null && !content.isBlank()) {
+                AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
             }
-            JsonObject json = JsonParser.parseString(content).getAsJsonObject();
-            String action = json.has("action") ? json.get("action").getAsString() : "";
+            return false;
+        }
+        try {
+            JsonObject json = JsonParser.parseString(jsonText).getAsJsonObject();
+            String action = optionalString(json, "action");
             if ("reply".equals(action)) {
                 return true;
             }
             JsonElement reply = json.get("reply");
             return reply != null && reply.isJsonPrimitive() && reply.getAsBoolean();
         } catch (Exception e) {
-            AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理");
+            AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
             return false;
         }
     }
 
     /**
-     * 单模型：要求 {"action":"reply","content":"..."} 或 {"action":"ignore"}。
+     * 单模型：优先读 {"action":"reply","content":"..."} 或 {"action":"ignore"}。
+     * 为了兼容只写 {"content":"..."} 的自定义提示词，缺少 action 时也按回复处理。
      */
     static AiResult parseReply(String content, TokenUsage usage) {
+        String jsonText = extractJson(content);
+        if (jsonText == null) {
+            if (content != null && !content.isBlank()) {
+                AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略：{}", preview(content));
+            }
+            return new AiResult(false, null, usage);
+        }
         try {
-            if (content == null || content.isBlank()) {
+            JsonObject json = JsonParser.parseString(jsonText).getAsJsonObject();
+            String action = optionalString(json, "action");
+            if ("ignore".equals(action)) {
                 return new AiResult(false, null, usage);
             }
-            JsonObject json = JsonParser.parseString(content).getAsJsonObject();
-            String action = json.has("action") ? json.get("action").getAsString() : "";
-            if (!"reply".equals(action)) {
+            String text = textOf(json.get("content"));
+            if (text == null || text.isEmpty()) {
+                if ("reply".equals(action)) {
+                    AiChatMod.LOGGER.warn("AI 返回了 reply 但 content 为空，已忽略：{}", preview(content));
+                }
                 return new AiResult(false, null, usage);
             }
-            JsonElement reply = json.get("content");
-            if (reply == null || reply.isJsonNull()) {
-                return new AiResult(false, null, usage);
-            }
-            String text = reply.getAsString().trim();
-            return text.isEmpty()
-                    ? new AiResult(false, null, usage)
-                    : new AiResult(true, text, usage);
+            return new AiResult(true, text, usage);
         } catch (Exception e) {
-            AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略");
+            AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略：{}", preview(content));
             return new AiResult(false, null, usage);
         }
     }
@@ -109,22 +120,96 @@ public final class AiClient {
         if (content == null || content.isBlank()) {
             return new AiResult(false, null, usage);
         }
-        try {
-            JsonObject json = JsonParser.parseString(content).getAsJsonObject();
-            JsonElement reply = json.get("content");
-            if (reply == null || reply.isJsonNull()) {
-                return new AiResult(false, null, usage);
+        String jsonText = extractJson(content);
+        if (jsonText != null) {
+            try {
+                JsonObject json = JsonParser.parseString(jsonText).getAsJsonObject();
+                String text = textOf(json.get("content"));
+                if (text != null && !text.isEmpty()) {
+                    return new AiResult(true, text, usage);
+                }
+            } catch (Exception ignored) {
+                // 落到下面的纯文本兜底
             }
-            String text = reply.getAsString().trim();
-            return text.isEmpty()
-                    ? new AiResult(false, null, usage)
-                    : new AiResult(true, text, usage);
-        } catch (Exception ignored) {
-            String text = content.trim();
-            return text.isEmpty()
-                    ? new AiResult(false, null, usage)
-                    : new AiResult(true, text, usage);
         }
+        String text = content.trim();
+        return text.isEmpty()
+                ? new AiResult(false, null, usage)
+                : new AiResult(true, text, usage);
+    }
+
+    /**
+     * 从模型输出里取出 JSON 对象：容忍 ```json 代码块和 JSON 前后的多余文字。
+     */
+    static String extractJson(String content) {
+        if (content == null || content.isBlank()) {
+            return null;
+        }
+        String text = content.trim();
+        if (text.startsWith("```")) {
+            int newline = text.indexOf('\n');
+            if (newline > 0) {
+                text = text.substring(newline + 1);
+            }
+            int fence = text.lastIndexOf("```");
+            if (fence >= 0) {
+                text = text.substring(0, fence);
+            }
+            text = text.trim();
+        }
+        int start = text.indexOf('{');
+        int end = text.lastIndexOf('}');
+        if (start < 0 || end <= start) {
+            return null;
+        }
+        return text.substring(start, end + 1);
+    }
+
+    /**
+     * content 一般是字符串；部分兼容端点会返回 [{type,text}] 数组，这里拼起来。
+     */
+    static String textOf(JsonElement element) {
+        if (element == null || element.isJsonNull()) {
+            return null;
+        }
+        if (element.isJsonPrimitive()) {
+            return element.getAsString().trim();
+        }
+        if (element.isJsonArray()) {
+            StringBuilder builder = new StringBuilder();
+            for (JsonElement part : element.getAsJsonArray()) {
+                if (part.isJsonObject()) {
+                    String text = optionalString(part.getAsJsonObject(), "text");
+                    if (!text.isEmpty()) {
+                        builder.append(text);
+                    }
+                } else if (part.isJsonPrimitive()) {
+                    builder.append(part.getAsString());
+                }
+            }
+            return builder.toString().trim();
+        }
+        return null;
+    }
+
+    private static String optionalString(JsonObject json, String field) {
+        JsonElement element = json.get(field);
+        return element == null || element.isJsonNull() || !element.isJsonPrimitive()
+                ? ""
+                : element.getAsString();
+    }
+
+    /**
+     * 只截取开头用于日志，避免刷屏；换行压成空格。
+     */
+    private static String preview(String content) {
+        if (content == null) {
+            return "null";
+        }
+        String text = content.replace("\r", " ").replace("\n", " ").trim();
+        return text.length() <= LOG_PREVIEW_LENGTH
+                ? text
+                : text.substring(0, LOG_PREVIEW_LENGTH) + "…";
     }
 
     /**
