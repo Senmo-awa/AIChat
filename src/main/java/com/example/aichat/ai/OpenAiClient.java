@@ -17,6 +17,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -32,9 +33,15 @@ public final class OpenAiClient {
     private OpenAiClient() {
     }
 
-    public static CompletableFuture<RawResult> ask(ApiProfile profile, String userMessage) {
+    public static CompletableFuture<RawResult> ask(
+            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
         JsonArray messages = new JsonArray();
         messages.add(msg("system", profile.systemPrompt()));
+        for (ConversationTurn turn : history) {
+            if (turn.content() != null && !turn.content().isBlank()) {
+                messages.add(msg(turn.role(), turn.content()));
+            }
+        }
         messages.add(msg("user", userMessage));
 
         JsonObject body = baseBody(profile);

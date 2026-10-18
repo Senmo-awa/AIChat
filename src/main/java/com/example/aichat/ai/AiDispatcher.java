@@ -5,6 +5,8 @@ import com.example.aichat.config.ConfigManager;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.usage.TokenUsage;
 import com.example.aichat.usage.UsageStore;
+import com.google.gson.Gson;
+import com.google.gson.JsonObject;
 import net.minecraft.ChatFormatting;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -23,6 +25,7 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public final class AiDispatcher {
+    private static final Gson GSON = new Gson();
     private static final ExecutorService WORKER = Executors.newSingleThreadExecutor(r -> {
         Thread thread = new Thread(r, "aichat-worker");
         thread.setDaemon(true);
@@ -34,8 +37,8 @@ public final class AiDispatcher {
         return thread;
     });
 
-    // TODO 第一版按规格只维护窗口、不拼进请求；跑通后再把历史上下文加入 messages。
-    private static final Deque<ChatContext> RECENT = new ArrayDeque<>();
+    // 最近对话（玩家事件 + AI 回复），请求时作为历史上下文一起发送。
+    private static final Deque<ConversationTurn> RECENT = new ArrayDeque<>();
     private static final AtomicBoolean KEY_WARNED = new AtomicBoolean(false);
     private static volatile MinecraftServer currentServer;
 
@@ -56,16 +59,6 @@ public final class AiDispatcher {
     public static void submit(ChatContext ctx) {
         if (!StateManager.canReplyTo(ctx.playerName())) {
             return;
-        }
-
-        if ("chat".equals(ctx.eventType())) {
-            synchronized (RECENT) {
-                RECENT.addLast(ctx);
-                int max = Math.max(0, ConfigManager.get().max_context_messages);
-                while (RECENT.size() > max) {
-                    RECENT.removeFirst();
-                }
-            }
         }
 
         if (!ConfigManager.get().buffer_enabled) {
@@ -142,7 +135,11 @@ public final class AiDispatcher {
 
         WORKER.submit(() -> {
             try {
-                AiResult result = AiClient.ask(batch).join();
+                // 在 worker 内串行维护历史，保证多批次排队时顺序正确
+                List<ConversationTurn> history = snapshotHistory();
+                appendHistory("user", batch.toUserMessage());
+
+                AiResult result = AiClient.ask(batch, history).join();
                 TokenUsage usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
 
                 if (usage.total() > 0) {
@@ -157,6 +154,14 @@ public final class AiDispatcher {
                 if (!result.reply() || result.content() == null) {
                     return;
                 }
+
+                // 历史里的 assistant 也保持 JSON 格式，避免模型模仿纯文本而破坏后续解析
+                JsonObject historyReply = new JsonObject();
+                if (!ConfigManager.isDualModelEnabled()) {
+                    historyReply.addProperty("action", "reply");
+                }
+                historyReply.addProperty("content", result.content());
+                appendHistory("assistant", GSON.toJson(historyReply));
 
                 MinecraftServer server = currentServer;
                 if (server == null) {
@@ -202,6 +207,25 @@ public final class AiDispatcher {
             if (debugMessage != null
                     && player.permissions().hasPermission(Permissions.COMMANDS_MODERATOR)) {
                 player.sendSystemMessage(debugMessage);
+            }
+        }
+    }
+
+    private static List<ConversationTurn> snapshotHistory() {
+        synchronized (RECENT) {
+            return new ArrayList<>(RECENT);
+        }
+    }
+
+    private static void appendHistory(String role, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        synchronized (RECENT) {
+            RECENT.addLast(new ConversationTurn(role, content));
+            int max = Math.max(0, ConfigManager.get().max_context_messages);
+            while (RECENT.size() > max) {
+                RECENT.removeFirst();
             }
         }
     }

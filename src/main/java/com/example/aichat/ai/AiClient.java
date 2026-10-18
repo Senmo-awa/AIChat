@@ -9,6 +9,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -20,23 +21,24 @@ public final class AiClient {
     private AiClient() {
     }
 
-    public static CompletableFuture<AiResult> ask(ChatContext ctx) {
+    public static CompletableFuture<AiResult> ask(ChatContext ctx, List<ConversationTurn> history) {
         String userMessage = ctx.toUserMessage();
 
         if (!ConfigManager.isDualModelEnabled()) {
-            return dispatch(ConfigManager.singleProfile(), userMessage)
+            return dispatch(ConfigManager.singleProfile(), userMessage, history)
                     .thenApply(raw -> parseReply(raw.text(), raw.usage()));
         }
 
+        // 判断模型只看当前事件，历史记录交给回复模型，避免误判。
         ApiProfile judgeProfile = ConfigManager.judgeProfile();
-        return dispatch(judgeProfile, userMessage).thenCompose(judgeRaw -> {
+        return dispatch(judgeProfile, userMessage, List.of()).thenCompose(judgeRaw -> {
             TokenUsage judgeUsage = judgeRaw.usage();
             if (!judgeSaysReply(judgeRaw.text())) {
                 return CompletableFuture.completedFuture(new AiResult(false, null, judgeUsage));
             }
 
             ApiProfile replyProfile = ConfigManager.replyProfile();
-            return dispatch(replyProfile, userMessage).thenApply(replyRaw -> {
+            return dispatch(replyProfile, userMessage, history).thenApply(replyRaw -> {
                 AiResult reply = parseReplyContent(replyRaw.text(), replyRaw.usage());
                 return new AiResult(
                         reply.reply(),
@@ -47,11 +49,12 @@ public final class AiClient {
         });
     }
 
-    private static CompletableFuture<RawResult> dispatch(ApiProfile profile, String userMessage) {
+    private static CompletableFuture<RawResult> dispatch(
+            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
         if ("anthropic".equals(Endpoints.resolveType(profile.apiType(), profile.apiUrl()))) {
-            return AnthropicClient.ask(profile, userMessage);
+            return AnthropicClient.ask(profile, userMessage, history);
         }
-        return OpenAiClient.ask(profile, userMessage);
+        return OpenAiClient.ask(profile, userMessage, history);
     }
 
     static boolean judgeSaysReply(String content) {

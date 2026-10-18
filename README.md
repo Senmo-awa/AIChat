@@ -47,7 +47,7 @@ gradlew.bat build
 | `system_prompt_file` | 系统提示词文件名，相对 `config/aichat/` |
 | `persona_prompt_file` | 人设提示词文件名，相对 `config/aichat/` |
 | `reply_prefix` | AI 消息前缀，设为空字符串则不加前缀 |
-| `max_context_messages` | 保留的聊天上下文条数（当前仅记录，不发送） |
+| `max_context_messages` | 随请求发送的最近对话条数（玩家事件与 AI 回复都计入），默认 10 |
 | `request_timeout_seconds` | 单次 HTTP 请求整体超时 |
 | `enable_join_quit_events` | 是否对加入/退出事件触发 AI |
 | `knowledge_dir` | 知识库目录名，相对 `config/aichat/` |

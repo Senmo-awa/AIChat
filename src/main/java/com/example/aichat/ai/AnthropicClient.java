@@ -17,6 +17,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -35,9 +36,13 @@ public final class AnthropicClient {
     private AnthropicClient() {
     }
 
-    public static CompletableFuture<RawResult> ask(ApiProfile profile, String userMessage) {
+    public static CompletableFuture<RawResult> ask(
+            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
         JsonArray messages = new JsonArray();
-        messages.add(msg("user", userMessage));
+        for (ConversationTurn turn : history) {
+            addMessage(messages, turn.role(), turn.content());
+        }
+        addMessage(messages, "user", userMessage);
 
         JsonObject body = baseBody(profile);
         body.add("messages", messages);
@@ -245,10 +250,25 @@ public final class AnthropicClient {
                 });
     }
 
-    private static JsonObject msg(String role, String content) {
+    /**
+     * Anthropic 要求 user / assistant 交替，连续同角色消息在这里合并。
+     */
+    private static void addMessage(JsonArray messages, String role, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        if (!messages.isEmpty()) {
+            JsonObject last = messages.get(messages.size() - 1).getAsJsonObject();
+            JsonElement lastRole = last.get("role");
+            if (lastRole != null && role.equals(lastRole.getAsString())) {
+                String merged = last.get("content").getAsString() + "\n" + content;
+                last.addProperty("content", merged);
+                return;
+            }
+        }
         JsonObject object = new JsonObject();
         object.addProperty("role", role);
         object.addProperty("content", content);
-        return object;
+        messages.add(object);
     }
 }
