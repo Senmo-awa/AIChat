@@ -106,7 +106,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 |---|---|
 | `/aichat on` | 默认状态：消息发给 AI，也能看到 AI 的消息 |
 | `/aichat off` | 消息不发给 AI，也看不到 AI 的消息 |
-| `/aichat onlyread` | 能看见 AI 的消息，但 AI 不回应 |
+| `/aichat onlyread` | 消息不发给 AI，能看到 AI 的消息 |
 
 需要管理员权限（权限等级 2，即 OP）：
 
