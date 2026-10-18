@@ -1,0 +1,12 @@
+{
+  "api_url": "https://api.deepseek.com/chat/completions",
+  "api_key": "sk-your-key-here",
+  "model": "deepseek-flash",
+  "system_prompt_file": "system_prompt.txt",
+  "persona_prompt": "你是一只生活在方块世界里的猫娘，说话带一点俏皮和喵喵口癖，但不要过度。",
+  "max_context_messages": 10,
+  "request_timeout_seconds": 20,
+  "enable_join_quit_events": true,
+  "knowledge_dir": "knowledge",
+  "use_json_mode": true
+}
