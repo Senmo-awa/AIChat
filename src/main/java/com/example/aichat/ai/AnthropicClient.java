@@ -1,9 +1,11 @@
 package com.example.aichat.ai;
 
+import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
 import com.example.aichat.knowledge.KnowledgeReader;
+import com.example.aichat.state.StateManager;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -238,6 +240,10 @@ public final class AnthropicClient {
 
         return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
                 .thenApply(response -> {
+                    if (StateManager.isDebug()) {
+                        AiChatMod.LOGGER.info("[debug] Anthropic 响应 HTTP {}：{}",
+                                response.statusCode(), response.body());
+                    }
                     if (response.statusCode() != 200) {
                         throw new RuntimeException("API 返回 " + response.statusCode()
                                 + AiClient.errorDetail(response.body()));

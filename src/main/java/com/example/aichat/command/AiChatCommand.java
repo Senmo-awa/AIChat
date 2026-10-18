@@ -99,7 +99,7 @@ public final class AiChatCommand {
                 /aichat token clear —— 清空统计并重新计算
                 /aichat reload —— 热重载配置文件
                 /aichat enable|disable —— 全局开启/关闭 AI 聊天
-                /aichat debug —— 切换聊天框内的 token 用量显示
+                /aichat debug —— 切换调试模式（聊天框 token 用量 + 日志原始响应）
                 /aichat ban <玩家> —— 不再回复该玩家（unban 解除，banlist 查看）""";
         source.sendSuccess(() -> Component.literal(text), false);
         return 1;

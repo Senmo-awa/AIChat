@@ -151,6 +151,12 @@ public final class AiDispatcher {
                     UsageStore.record(batch.playerName(), ConfigManager.usageModelName(), usage);
                 }
 
+                if (StateManager.isDebug()) {
+                    AiChatMod.LOGGER.info(
+                            "[debug] 解析结果：reply={}，content={}（事件：{}，消息数：{}，历史条数：{}）",
+                            result.reply(), result.content(), batch.eventType(), events.size(), history.size());
+                }
+
                 if (!result.reply() || result.content() == null) {
                     return;
                 }

@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.5.3 - 2026-10-18
+
+### Changed
+
+- `/aichat debug` 现在除了聊天框 token 用量，还会把 AI 接口返回的**完整原始 JSON**（`choices`、`tool_calls`、`usage`、`finish_reason` 等）和模组的解析结果写进服务端日志，方便排查「AI 不回复」到底卡在哪一层。
+
 ## 1.5.2 - 2026-10-18
 
 ### Fixed

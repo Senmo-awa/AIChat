@@ -116,7 +116,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 | `/aichat token clear` | 清空统计并重新计算（原文件按时间戳备份） |
 | `/aichat reload` | 热重载 `config.json` 和 `system.json` |
 | `/aichat enable` / `/aichat disable` | 全局开启/关闭 AI 聊天 |
-| `/aichat debug` | 切换聊天框内的 token 用量显示（仅管理员可见） |
+| `/aichat debug` | 切换调试模式：聊天框显示 token 用量（仅管理员），同时把 AI 接口的原始响应和解析结果写进服务端日志 |
 | `/aichat ban <玩家>` | 该玩家的发言不再发给 AI；离线玩家也可操作 |
 | `/aichat unban <玩家>` | 解除禁止 |
 | `/aichat banlist` | 查看禁止列表 |
@@ -186,9 +186,13 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 
 ## 行为
 
-- 玩家聊天会触发一次判断；模型返回 `{"action":"reply","content":"..."}` 时广播回复，返回 `{"action":"ignore"}` 时静默。
+- 玩家聊天会触发一次判断；模型返回 `{"action":"reply","content":"..."}` 或只返回 `{"content":"..."}` 时广播回复，返回 `{"action":"ignore"}` 时静默。返回值带 ```json 代码块或前后有少量文字也能正确解析。
 - 最近 `max_context_messages` 条玩家事件与 AI 回复会作为历史消息随请求发送，AI 可以记住前几句聊天。
-- 每次请求的 token 用量会写入服务端日志；`/aichat debug` 开启后，管理员还会在聊天框里看到灰色用量行。
+- 每次请求的 token 用量会写入服务端日志；`/aichat debug` 开启后，管理员还会在聊天框里看到灰色用量行，同时服务端日志会额外输出：
+  - `[debug] OpenAI 兼容响应 HTTP 200：{...}` / `[debug] Anthropic 响应 HTTP 200：{...}`：接口返回的完整 JSON（含 `choices`、`tool_calls`、`usage`、`finish_reason` 等原始字段）
+  - `[debug] 解析结果：reply=...，content=...（事件：...，消息数：...，历史条数：...）`：模组最终解析出的结果
+
+  排查「AI 不回复」时，先看这两行：如果原始响应里有内容但解析结果是 `reply=false`，问题在解析或提示词；如果原始响应本身没有内容，问题在模型或平台。
 - 消息在发给 AI 之前先经过模组端校验：被 ban、全局关闭、玩家 `off`/`onlyread` 时直接拦截，不会产生 API 请求。
 - AI 广播会逐个玩家投递：`off` 玩家收不到，`onlyread` 和 `on` 玩家正常接收。
 - 玩家加入时发送欢迎消息；退出默认忽略。可在 `system_prompt.txt` 中调整。
