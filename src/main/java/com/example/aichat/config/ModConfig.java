@@ -13,6 +13,8 @@ package com.example.aichat.config;
  * enable_join_quit_events: 是否对加入/退出事件也触发 AI
  * knowledge_dir: 知识库目录名（相对于 config/aichat/）
  * use_json_mode: 是否发送 response_format=json_object
+ * enable_thinking: 是否开启深度思考（thinking），默认关闭
+ * enable_tools: 是否发送工具定义（知识库检索），默认关闭
  */
 public class ModConfig {
     public String api_url = "https://api.deepseek.com/chat/completions";
@@ -26,4 +28,6 @@ public class ModConfig {
     public boolean enable_join_quit_events = true;
     public String knowledge_dir = "knowledge";
     public boolean use_json_mode = true;
+    public boolean enable_thinking = false;
+    public boolean enable_tools = false;
 }

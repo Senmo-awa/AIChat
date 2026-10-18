@@ -9,5 +9,7 @@
   "request_timeout_seconds": 20,
   "enable_join_quit_events": true,
   "knowledge_dir": "knowledge",
-  "use_json_mode": true
+  "use_json_mode": true,
+  "enable_thinking": false,
+  "enable_tools": false
 }

@@ -22,7 +22,7 @@ public final class ConfigManager {
     private static final String DEFAULT_PERSONA_FILE = "persona_prompt.txt";
     private static final String LEGACY_PERSONA_FIELD = "persona_prompt";
 
-    private static ModConfig config;
+    private static volatile ModConfig config;
     private static Path modConfigDir;
 
     private ConfigManager() {
@@ -30,6 +30,14 @@ public final class ConfigManager {
 
     public static void init() {
         modConfigDir = FabricLoader.getInstance().getConfigDir().resolve("aichat");
+        reload();
+    }
+
+    /**
+     * 重新读取 config.json；/reload 命令会调用这里。
+     * 读取或解析失败时抛 RuntimeException，旧配置保持不变。
+     */
+    public static synchronized void reload() {
         try {
             Files.createDirectories(modConfigDir);
             copyIfMissing("config.json");
@@ -40,38 +48,44 @@ public final class ConfigManager {
 
             boolean rewriteConfig = migrateLegacyPersona(root);
 
-            config = GSON.fromJson(root, ModConfig.class);
-            if (config == null) {
-                config = new ModConfig();
+            ModConfig loaded = GSON.fromJson(root, ModConfig.class);
+            if (loaded == null) {
+                loaded = new ModConfig();
             }
+            applyDefaults(loaded);
 
-            if (config.knowledge_dir == null || config.knowledge_dir.isBlank()) {
-                config.knowledge_dir = "knowledge";
-            }
-            if (config.system_prompt_file == null || config.system_prompt_file.isBlank()) {
-                config.system_prompt_file = DEFAULT_SYSTEM_PROMPT_FILE;
-            }
-            if (config.persona_prompt_file == null || config.persona_prompt_file.isBlank()) {
-                config.persona_prompt_file = DEFAULT_PERSONA_FILE;
-            }
-            if (config.reply_prefix == null) {
-                config.reply_prefix = "[AI] ";
-            }
+            // 全部校验通过后再替换，避免加载失败时丢失旧配置
+            config = loaded;
 
             if (rewriteConfig) {
                 Files.writeString(configFile, GSON.toJson(root), StandardCharsets.UTF_8);
             }
 
-            if (DEFAULT_SYSTEM_PROMPT_FILE.equals(config.system_prompt_file)) {
+            if (DEFAULT_SYSTEM_PROMPT_FILE.equals(loaded.system_prompt_file)) {
                 copyIfMissing(DEFAULT_SYSTEM_PROMPT_FILE);
             }
-            if (DEFAULT_PERSONA_FILE.equals(config.persona_prompt_file)) {
+            if (DEFAULT_PERSONA_FILE.equals(loaded.persona_prompt_file)) {
                 copyIfMissing(DEFAULT_PERSONA_FILE);
             }
 
-            Files.createDirectories(modConfigDir.resolve(config.knowledge_dir));
+            Files.createDirectories(modConfigDir.resolve(loaded.knowledge_dir));
         } catch (IOException | JsonParseException e) {
-            throw new RuntimeException("无法初始化 AI Chat 配置", e);
+            throw new RuntimeException("无法加载 AI Chat 配置: " + e.getMessage(), e);
+        }
+    }
+
+    private static void applyDefaults(ModConfig target) {
+        if (target.knowledge_dir == null || target.knowledge_dir.isBlank()) {
+            target.knowledge_dir = "knowledge";
+        }
+        if (target.system_prompt_file == null || target.system_prompt_file.isBlank()) {
+            target.system_prompt_file = DEFAULT_SYSTEM_PROMPT_FILE;
+        }
+        if (target.persona_prompt_file == null || target.persona_prompt_file.isBlank()) {
+            target.persona_prompt_file = DEFAULT_PERSONA_FILE;
+        }
+        if (target.reply_prefix == null) {
+            target.reply_prefix = "[AI] ";
         }
     }
 

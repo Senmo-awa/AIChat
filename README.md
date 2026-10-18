@@ -52,6 +52,8 @@ gradlew.bat build
 | `enable_join_quit_events` | 是否对加入/退出事件触发 AI |
 | `knowledge_dir` | 知识库目录名，相对 `config/aichat/` |
 | `use_json_mode` | 是否发送 `response_format=json_object` |
+| `enable_thinking` | 是否开启深度思考（`thinking`），默认关闭 |
+| `enable_tools` | 是否发送工具定义（知识库检索），默认关闭 |
 
 运行期状态保存在 `config/aichat/state.json`（全局开关、调试模式、禁止列表、玩家模式），
 token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查看。
@@ -76,6 +78,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 | `/aichat ban <玩家>` | 该玩家的发言不再发给 AI；离线玩家也可操作 |
 | `/aichat unban <玩家>` | 解除禁止 |
 | `/aichat banlist` | 查看禁止列表 |
+| `/reload` | 热重载 `config.json`（同时保留原版数据包重载） |
 
 ## 行为
 
@@ -85,7 +88,9 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - AI 广播会逐个玩家投递：`off` 玩家收不到，`onlyread` 和 `on` 玩家正常接收。
 - 玩家加入时发送欢迎消息；退出默认忽略。可在 `system_prompt.txt` 中调整。
 - `/say`、`/me` 等命令消息不会触发 AI。
-- 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；文件读取受白名单和路径校验限制，最多两轮请求。
+- 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；文件读取受白名单和路径校验限制，最多两轮请求。`enable_tools` 为 `false` 时不发送工具定义，模型不会读取知识库。
+- `enable_thinking` 控制请求里的 `thinking` 字段，默认 `false`（关闭深度思考）。
+- `/reload` 重新读取 `config.json`，失败时保留原配置并提示错误。
 - 不创建假玩家，不执行游戏操作。
 
 ## 测试

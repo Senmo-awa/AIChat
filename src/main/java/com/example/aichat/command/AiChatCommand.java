@@ -1,5 +1,6 @@
 package com.example.aichat.command;
 
+import com.example.aichat.config.ConfigManager;
 import com.example.aichat.state.PlayerMode;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.usage.UsageStore;
@@ -9,6 +10,7 @@ import com.mojang.brigadier.exceptions.CommandSyntaxException;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
+import net.minecraft.server.commands.ReloadCommand;
 import net.minecraft.server.level.ServerPlayer;
 
 import java.util.List;
@@ -63,6 +65,26 @@ public final class AiChatCommand {
                 .then(Commands.literal("onlyread")
                         .executes(ctx -> setMode(ctx.getSource(), PlayerMode.ONLY_READ)))
         );
+
+        // 覆盖原版 /reload 的执行体：先热重载模组配置，再保留原版数据包重载。
+        dispatcher.register(Commands.literal("reload")
+                .requires(Commands.hasPermission(Commands.LEVEL_GAMEMASTERS))
+                .executes(ctx -> reload(ctx.getSource())));
+    }
+
+    private static int reload(CommandSourceStack source) {
+        try {
+            ConfigManager.reload();
+        } catch (RuntimeException e) {
+            source.sendFailure(Component.literal("AI Chat 配置加载失败：" + e.getMessage()));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("AI Chat 配置已重新加载。"), true);
+        ReloadCommand.reloadPacks(
+                source.getServer().getPackRepository().getSelectedIds(),
+                source
+        );
+        return 1;
     }
 
     private static int showHelp(CommandSourceStack source) {

@@ -135,7 +135,7 @@ public final class DeepSeekClient {
         body.addProperty("stream", false);
 
         JsonObject thinking = new JsonObject();
-        thinking.addProperty("type", "disabled");
+        thinking.addProperty("type", ConfigManager.get().enable_thinking ? "enabled" : "disabled");
         body.add("thinking", thinking);
 
         if (ConfigManager.get().use_json_mode) {
@@ -144,7 +144,9 @@ public final class DeepSeekClient {
             body.add("response_format", format);
         }
 
-        body.add("tools", toolDefinitions());
+        if (ConfigManager.get().enable_tools) {
+            body.add("tools", toolDefinitions());
+        }
         return body;
     }
 
