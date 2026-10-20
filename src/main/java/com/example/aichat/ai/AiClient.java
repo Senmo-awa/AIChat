@@ -4,6 +4,7 @@ import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
+import com.example.aichat.state.StateManager;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -29,11 +30,17 @@ public final class AiClient {
                     .thenApply(raw -> parseReply(raw.text(), raw.usage()));
         }
 
-        // 判断模型只看当前事件，历史记录交给回复模型，避免误判。
+        // 判断模型也要带历史：提示词里的"结合上下文""玩家在和别人聊天"等规则依赖上下文，
+        // 只给当前事件会让 judge 变成盲判，和单模型模式的表现不一致。
         ApiProfile judgeProfile = ConfigManager.judgeProfile();
-        return dispatch(judgeProfile, userMessage, List.of()).thenCompose(judgeRaw -> {
+        return dispatch(judgeProfile, userMessage, history).thenCompose(judgeRaw -> {
             TokenUsage judgeUsage = judgeRaw.usage();
-            if (!judgeSaysReply(judgeRaw.text())) {
+            boolean shouldReply = judgeSaysReply(judgeRaw.text());
+            if (StateManager.isDebug()) {
+                AiChatMod.LOGGER.info("[debug] 判断模型结论：{}（事件：{}，历史条数：{}）",
+                        shouldReply ? "reply" : "ignore", ctx.eventType(), history.size());
+            }
+            if (!shouldReply) {
                 return CompletableFuture.completedFuture(new AiResult(false, null, judgeUsage));
             }
 
@@ -62,7 +69,9 @@ public final class AiClient {
     static boolean judgeSaysReply(String content) {
         String jsonText = extractJson(content);
         if (jsonText == null) {
-            if (content != null && !content.isBlank()) {
+            if (content == null || content.isBlank()) {
+                AiChatMod.LOGGER.warn("判断模型返回空内容，按不回复处理");
+            } else {
                 AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
             }
             return false;

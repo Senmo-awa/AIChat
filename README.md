@@ -135,6 +135,8 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 作用：先用一个便宜、快速的模型判断“要不要回复”，需要回复时再调用另一个模型生成内容。
 两套 API 完全独立，可以指向不同平台、使用不同 Key 和模型。
 
+判断模型和回复模型都会收到最近 `max_context_messages` 条历史，`judge_prompt.txt` 中依赖上下文的规则（例如“玩家在和其他人聊天时不要插话”）才能真正生效。
+
 ### 开启步骤
 
 1. 打开 `config/aichat/system.json`。
