@@ -6,6 +6,7 @@ import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
 import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.state.StateManager;
+import com.example.aichat.text.ConsoleSafe;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -44,7 +45,7 @@ public final class AnthropicClient {
         for (ConversationTurn turn : history) {
             addMessage(messages, turn.role(), turn.content());
         }
-        addMessage(messages, "user", userMessage);
+        addMessage(messages, "user", userText(profile, userMessage));
 
         JsonObject body = baseBody(profile);
         body.add("messages", messages);
@@ -97,6 +98,18 @@ public final class AnthropicClient {
         });
     }
 
+    /**
+     * 与 OpenAI 兼容端点保持一致的兜底：部分中转会丢掉 system，这里把系统提示词再拼进用户消息。
+     */
+    private static String userText(ApiProfile profile, String userMessage) {
+        String prompt = profile.systemPrompt();
+        if (profile.systemInUserMessage() && prompt != null && !prompt.isBlank()) {
+            return "【以下为系统规则，必须严格遵守】\n" + prompt.trim()
+                    + "\n\n【当前事件】\n" + userMessage;
+        }
+        return userMessage;
+    }
+
     private static JsonObject baseBody(ApiProfile profile) {
         JsonObject body = new JsonObject();
         body.addProperty("model", profile.model());
@@ -130,11 +143,14 @@ public final class AnthropicClient {
     }
 
     private static JsonArray toolDefinitions() {
+        List<String> files = KnowledgeReader.listFiles();
+        String list = files.isEmpty() ? "（知识库为空）" : String.join("、", files);
+
         JsonArray tools = new JsonArray();
         JsonObject tool = new JsonObject();
         tool.addProperty("name", "read_knowledge_file");
         tool.addProperty("description",
-                "当需要查阅知识库文件时调用。file_name 必须是可用知识库文件列表中的文件名。");
+                "当需要查阅知识库文件时调用。file_name 只能取以下之一：" + list);
 
         JsonObject schema = new JsonObject();
         schema.addProperty("type", "object");
@@ -242,7 +258,7 @@ public final class AnthropicClient {
                 .thenApply(response -> {
                     if (StateManager.isDebug()) {
                         AiChatMod.LOGGER.info("[debug] Anthropic 响应 HTTP {}：{}",
-                                response.statusCode(), response.body());
+                                response.statusCode(), ConsoleSafe.escape(response.body()));
                     }
                     if (response.statusCode() != 200) {
                         throw new RuntimeException("API 返回 " + response.statusCode()

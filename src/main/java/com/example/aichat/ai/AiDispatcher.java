@@ -3,6 +3,7 @@ package com.example.aichat.ai;
 import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.state.StateManager;
+import com.example.aichat.text.ConsoleSafe;
 import com.example.aichat.usage.TokenUsage;
 import com.example.aichat.usage.UsageStore;
 import com.google.gson.Gson;
@@ -154,7 +155,8 @@ public final class AiDispatcher {
                 if (StateManager.isDebug()) {
                     AiChatMod.LOGGER.info(
                             "[debug] 解析结果：reply={}，content={}（事件：{}，消息数：{}，历史条数：{}）",
-                            result.reply(), result.content(), batch.eventType(), events.size(), history.size());
+                            result.reply(), ConsoleSafe.escape(result.content()),
+                            batch.eventType(), events.size(), history.size());
                 }
 
                 if (!result.reply() || result.content() == null) {
@@ -181,7 +183,7 @@ public final class AiDispatcher {
                 TokenUsage finalUsage = usage;
                 server.execute(() -> broadcast(server, line, finalUsage));
             } catch (Exception e) {
-                AiChatMod.LOGGER.warn("AI 请求失败: {}", e.getMessage());
+                AiChatMod.LOGGER.warn("AI 请求失败: {}", ConsoleSafe.escape(e.getMessage()));
             }
         });
     }
@@ -195,8 +197,11 @@ public final class AiDispatcher {
             return;
         }
 
+        // 控制台那份单独过滤：中文 Windows 的 GBK 控制台写不了颜文字里的 ｡ ・ ∀ ๑ 之类，
+        // 会让 MCDR 等包装器的日志写入抛 UnicodeEncodeError。玩家走网络 UTF-8，不受影响。
         Component message = Component.literal(line);
-        server.sendSystemMessage(message);
+        Component consoleMessage = Component.literal(ConsoleSafe.drop(line));
+        server.sendSystemMessage(consoleMessage);
 
         boolean debug = StateManager.isDebug();
         Component debugMessage = debug && usage.total() > 0

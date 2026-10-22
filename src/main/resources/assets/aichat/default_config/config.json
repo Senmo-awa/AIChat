@@ -1,5 +1,5 @@
 {
-  "config_version": 2,
+  "config_version": 3,
   "api_url": "https://api.deepseek.com/chat/completions",
   "api_key": "sk-your-key-here",
   "model": "deepseek-flash",
@@ -21,5 +21,6 @@
   "buffer_enabled": true,
   "buffer_delay_seconds": 5,
   "buffer_max_messages": 10,
-  "buffer_max_chars": 500
+  "buffer_max_chars": 500,
+  "system_prompt_in_user": true
 }

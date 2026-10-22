@@ -6,6 +6,7 @@ import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
 import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.state.StateManager;
+import com.example.aichat.text.ConsoleSafe;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -19,6 +20,7 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 
@@ -28,6 +30,10 @@ import java.util.concurrent.CompletableFuture;
  */
 public final class OpenAiClient {
     private static final Gson GSON = new Gson();
+    private static final int RETRY_MIN_TOKENS = 1024;
+    private static final int RETRY_MAX_TOKENS = 4096;
+    private static final int MAX_TOOL_ROUNDS = 4;
+    private static final int MAX_TOOL_CONTENT_CHARS = 6000;
     private static final HttpClient HTTP = HttpClient.newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build();
@@ -44,50 +50,94 @@ public final class OpenAiClient {
                 messages.add(msg(turn.role(), turn.content()));
             }
         }
-        messages.add(msg("user", userMessage));
+        messages.add(msg("user", userText(profile, userMessage)));
 
         JsonObject body = baseBody(profile);
         body.add("messages", messages);
 
-        return send(profile, body).thenCompose(first -> {
-            TokenUsage firstUsage = parseUsage(first);
-            JsonObject message = firstMessage(first);
-            JsonArray toolCalls = message.has("tool_calls")
-                    ? message.getAsJsonArray("tool_calls") : null;
+        return toolRound(profile, messages, body, 1, TokenUsage.ZERO);
+    }
 
-            if (toolCalls == null || toolCalls.isEmpty()) {
-                return CompletableFuture.completedFuture(
-                        new RawResult(contentOf(message), firstUsage));
+    /**
+     * 有的中转站/兼容端点会把 system 角色整条丢弃，模组的格式契约和人设就到不了模型。
+     * 开启 system_prompt_in_user 时把系统提示词再拼进最后一条用户消息，保证契约一定被看到。
+     */
+    private static String userText(ApiProfile profile, String userMessage) {
+        String prompt = profile.systemPrompt();
+        if (!profile.systemInUserMessage() || prompt == null || prompt.isBlank()) {
+            return userMessage;
+        }
+        return "【以下为系统规则，必须严格遵守】\n" + prompt.trim()
+                + "\n\n【当前事件】\n" + userMessage;
+    }
+
+    /**
+     * 工具调用可能不止一轮：模型读完一个文件后可能还要读另一个。把 tool_calls 直接当最终回复
+     * 会得到空 content，解析就失败了。这里循环多轮，每轮回灌所有 tool_call 的结果；
+     * 超过 MAX_TOOL_ROUNDS 后再发一次不带工具的请求，逼模型直接给出最终 JSON。
+     */
+    private static CompletableFuture<RawResult> toolRound(
+            ApiProfile profile, JsonArray messages, JsonObject body, int round, TokenUsage used) {
+        boolean lastChance = round > MAX_TOOL_ROUNDS;
+        JsonObject requestBody = body;
+        if (lastChance && requestBody.has("tools")) {
+            requestBody = body.deepCopy();
+            requestBody.remove("tools");
+            AiChatMod.LOGGER.info("工具调用已达 {} 轮，最后一次请求不再提供工具，要求模型直接给出结论", MAX_TOOL_ROUNDS);
+        }
+        return sendWithRetry(profile, requestBody).thenCompose(attempts -> {
+            TokenUsage usage = used.plus(totalUsage(attempts));
+            JsonObject response = attempts.get(attempts.size() - 1);
+            JsonObject message = firstMessage(response);
+            JsonElement toolCalls = message.get("tool_calls");
+            if (toolCalls == null || !toolCalls.isJsonArray() || toolCalls.getAsJsonArray().isEmpty()) {
+                return CompletableFuture.completedFuture(new RawResult(contentOf(message), usage));
             }
-
-            JsonObject toolCall = toolCalls.get(0).getAsJsonObject();
-            String callId = toolCall.get("id").getAsString();
-            String fileName = parseFileName(toolCall);
-
-            String fileContent;
-            try {
-                if (fileName == null || fileName.isBlank()) {
-                    throw new IllegalArgumentException("缺少 file_name");
-                }
-                fileContent = KnowledgeReader.read(fileName);
-            } catch (Exception e) {
-                fileContent = "读取失败: " + e.getMessage();
+            if (lastChance) {
+                AiChatMod.LOGGER.warn("模型在没有工具的情况下仍返回 tool_calls，本次按不回复处理");
+                return CompletableFuture.completedFuture(new RawResult(contentOf(message), usage));
             }
 
             messages.add(message);
-            JsonObject toolMsg = new JsonObject();
-            toolMsg.addProperty("role", "tool");
-            toolMsg.addProperty("tool_call_id", callId);
-            toolMsg.addProperty("content", fileContent);
-            messages.add(toolMsg);
+            for (JsonElement element : toolCalls.getAsJsonArray()) {
+                if (!element.isJsonObject()) {
+                    continue;
+                }
+                JsonObject toolCall = element.getAsJsonObject();
+                String callId = toolCall.has("id") && !toolCall.get("id").isJsonNull()
+                        ? toolCall.get("id").getAsString() : "";
+                String fileContent;
+                try {
+                    String fileName = parseFileName(toolCall);
+                    if (fileName == null || fileName.isBlank()) {
+                        throw new IllegalArgumentException("缺少 file_name");
+                    }
+                    fileContent = truncate(KnowledgeReader.read(fileName));
+                } catch (Exception e) {
+                    fileContent = "读取失败: " + e.getMessage();
+                }
+                JsonObject toolMsg = new JsonObject();
+                toolMsg.addProperty("role", "tool");
+                toolMsg.addProperty("tool_call_id", callId);
+                toolMsg.addProperty("content", fileContent);
+                messages.add(toolMsg);
+            }
 
-            JsonObject secondBody = baseBody(profile);
-            secondBody.add("messages", messages);
-            return send(profile, secondBody).thenApply(resp -> new RawResult(
-                    contentOf(firstMessage(resp)),
-                    firstUsage.plus(parseUsage(resp))
-            ));
+            JsonObject nextBody = baseBody(profile);
+            nextBody.add("messages", messages);
+            int nextRound = round + 1;
+            return toolRound(profile, messages, nextBody, nextRound, usage);
         });
+    }
+
+    /**
+     * 知识库文件可能很长，全量回灌会吃掉大量 prompt token，这里做上限截断。
+     */
+    private static String truncate(String content) {
+        if (content == null || content.length() <= MAX_TOOL_CONTENT_CHARS) {
+            return content;
+        }
+        return content.substring(0, MAX_TOOL_CONTENT_CHARS) + "\n…（文件过长，已截断）";
     }
 
     /**
@@ -105,12 +155,77 @@ public final class OpenAiClient {
         return name == null || name.isJsonNull() ? null : name.getAsString();
     }
 
-    private static JsonObject firstMessage(JsonObject response) {
+    /**
+     * 推理模型的思考内容也计入 max_tokens。预算给小了会得到 finish_reason=length 且 content 为空的响应，
+     * 判断环节就会永远"忽略"。这里遇到这种情况自动放大一次预算重试，避免整个模组静默失灵。
+     */
+    private static CompletableFuture<List<JsonObject>> sendWithRetry(ApiProfile profile, JsonObject body) {
+        List<JsonObject> attempts = new ArrayList<>();
+        return send(profile, body).thenCompose(first -> {
+            attempts.add(first);
+            int limit = profile.maxOutputTokens();
+            if (limit <= 0 || !truncatedWithoutContent(first)) {
+                return CompletableFuture.completedFuture(attempts);
+            }
+            int retryLimit = Math.min(RETRY_MAX_TOKENS, Math.max(RETRY_MIN_TOKENS, limit * 4));
+            if (retryLimit <= limit) {
+                return CompletableFuture.completedFuture(attempts);
+            }
+            AiChatMod.LOGGER.warn(
+                    "模型输出被 max_tokens={} 截断且 content 为空（finish_reason=length，推理占满了预算），"
+                            + "改用 max_tokens={} 重试一次",
+                    limit, retryLimit);
+            JsonObject retryBody = body.deepCopy();
+            retryBody.addProperty("max_tokens", retryLimit);
+            return send(profile, retryBody).thenApply(second -> {
+                attempts.add(second);
+                if (truncatedWithoutContent(second)) {
+                    AiChatMod.LOGGER.warn(
+                            "重试后 content 仍为空（max_tokens={} 依旧被推理占满），本次按不回复处理；"
+                                    + "请调大 system.json 里的 max_output_tokens，或关闭该模型的思考模式",
+                            retryLimit);
+                }
+                return attempts;
+            });
+        });
+    }
+
+    private static boolean truncatedWithoutContent(JsonObject response) {
+        JsonObject choice = firstChoice(response);
+        JsonElement finish = choice == null ? null : choice.get("finish_reason");
+        if (finish == null || !finish.isJsonPrimitive()
+                || !"length".equals(finish.getAsString())) {
+            return false;
+        }
+        JsonObject message = firstMessage(response);
+        JsonElement toolCalls = message.get("tool_calls");
+        if (toolCalls != null && toolCalls.isJsonArray() && !toolCalls.getAsJsonArray().isEmpty()) {
+            return false;
+        }
+        String content = contentOf(message);
+        return content == null || content.isBlank();
+    }
+
+    private static TokenUsage totalUsage(List<JsonObject> attempts) {
+        TokenUsage usage = TokenUsage.ZERO;
+        for (JsonObject attempt : attempts) {
+            usage = usage.plus(parseUsage(attempt));
+        }
+        return usage;
+    }
+
+    private static JsonObject firstChoice(JsonObject response) {
         JsonElement choices = response.get("choices");
         if (choices == null || !choices.isJsonArray() || choices.getAsJsonArray().isEmpty()) {
+            return null;
+        }
+        JsonElement choice = choices.getAsJsonArray().get(0);
+        return choice.isJsonObject() ? choice.getAsJsonObject() : null;
+    }    private static JsonObject firstMessage(JsonObject response) {
+        JsonObject choice = firstChoice(response);
+        if (choice == null) {
             throw new IllegalStateException("API 响应缺少 choices");
         }
-        JsonObject choice = choices.getAsJsonArray().get(0).getAsJsonObject();
         JsonElement message = choice.get("message");
         if (message == null || !message.isJsonObject()) {
             throw new IllegalStateException("API 响应缺少 message");
@@ -159,14 +274,18 @@ public final class OpenAiClient {
     }
 
     private static JsonArray toolDefinitions() {
+        List<String> files = KnowledgeReader.listFiles();
+        String list = files.isEmpty() ? "（知识库为空）" : String.join("、", files);
+
         JsonArray tools = new JsonArray();
         JsonObject tool = new JsonObject();
         tool.addProperty("type", "function");
 
         JsonObject function = new JsonObject();
         function.addProperty("name", "read_knowledge_file");
+        // 把真实文件名写进工具描述：否则模型只能瞎猜（小墨.md / knowledge.md 之类），全部读取失败。
         function.addProperty("description",
-                "当需要查阅知识库文件时调用。file_name 必须是可用知识库文件列表中的文件名。");
+                "当需要查阅知识库文件时调用。file_name 只能取以下之一：" + list);
 
         JsonObject parameters = new JsonObject();
         parameters.addProperty("type", "object");
@@ -174,7 +293,7 @@ public final class OpenAiClient {
         JsonObject properties = new JsonObject();
         JsonObject fileName = new JsonObject();
         fileName.addProperty("type", "string");
-        fileName.addProperty("description", "知识库文件名");
+        fileName.addProperty("description", "知识库文件名，可选值：" + list);
         properties.add("file_name", fileName);
         parameters.add("properties", properties);
 
@@ -201,7 +320,7 @@ public final class OpenAiClient {
                 .thenApply(response -> {
                     if (StateManager.isDebug()) {
                         AiChatMod.LOGGER.info("[debug] OpenAI 兼容响应 HTTP {}：{}",
-                                response.statusCode(), response.body());
+                                response.statusCode(), ConsoleSafe.escape(response.body()));
                     }
                     if (response.statusCode() != 200) {
                         // 只记录状态码与错误消息，避免泄露请求体与 API Key

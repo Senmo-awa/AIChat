@@ -27,7 +27,12 @@ public final class ConfigManager {
     private static final String DEFAULT_JUDGE_PROMPT_FILE = "judge_prompt.txt";
     private static final String DEFAULT_REPLY_PROMPT_FILE = "reply_prompt.txt";
     private static final String LEGACY_PERSONA_FIELD = "persona_prompt";
-    private static final int CURRENT_CONFIG_VERSION = 2;
+    /**
+     * 判断模型的默认输出预算。推理模型的思考 token 也算在 max_tokens 里，
+     * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
+     */
+    private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
+    private static final int CURRENT_CONFIG_VERSION = 3;
     private static final int CURRENT_SYSTEM_VERSION = 1;
 
     private static volatile ModConfig config;
@@ -293,26 +298,33 @@ public final class ConfigManager {
                 current.send_thinking_field,
                 current.reasoning_effort,
                 current.max_output_tokens,
-                current.thinking_budget_tokens
+                current.thinking_budget_tokens,
+                current.system_prompt_in_user
         );
     }
 
     public static ApiProfile judgeProfile() {
         ModConfig current = config;
         SystemConfig.ApiSettings settings = systemConfig.judge;
+        String apiUrl = or(settings.api_url, current.api_url);
+        String model = or(settings.model, current.model);
+        // 判断任务只需要一行 JSON。推理模型默认开着思考，会把输出预算全烧在 reasoning_content 上，
+        // 导致 content 为空、判断永远"忽略"，所以在支持开关的平台上主动关闭思考。
+        boolean disableThinking = Endpoints.supportsThinkingToggle(apiUrl, model);
         return new ApiProfile(
-                or(settings.api_url, current.api_url),
+                apiUrl,
                 or(settings.api_key, current.api_key),
-                or(settings.model, current.model),
+                model,
                 or(settings.api_type, current.api_type),
                 readPrompt(or(settings.system_prompt_file, DEFAULT_JUDGE_PROMPT_FILE)),
                 false,
                 true,
                 false,
-                false,
+                disableThinking,
                 "",
-                settings.max_output_tokens > 0 ? settings.max_output_tokens : 256,
-                0
+                settings.max_output_tokens > 0 ? settings.max_output_tokens : DEFAULT_JUDGE_MAX_OUTPUT_TOKENS,
+                0,
+                current.system_prompt_in_user
         );
     }
 
@@ -331,7 +343,8 @@ public final class ConfigManager {
                 current.send_thinking_field,
                 current.reasoning_effort,
                 settings.max_output_tokens > 0 ? settings.max_output_tokens : current.max_output_tokens,
-                settings.thinking_budget_tokens > 0 ? settings.thinking_budget_tokens : current.thinking_budget_tokens
+                settings.thinking_budget_tokens > 0 ? settings.thinking_budget_tokens : current.thinking_budget_tokens,
+                current.system_prompt_in_user
         );
     }
 

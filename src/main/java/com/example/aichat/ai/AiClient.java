@@ -5,6 +5,7 @@ import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
 import com.example.aichat.state.StateManager;
+import com.example.aichat.text.ConsoleSafe;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -70,7 +71,8 @@ public final class AiClient {
         String jsonText = extractJson(content);
         if (jsonText == null) {
             if (content == null || content.isBlank()) {
-                AiChatMod.LOGGER.warn("判断模型返回空内容，按不回复处理");
+                AiChatMod.LOGGER.warn(
+                        "判断模型返回空内容，按不回复处理（若同时看到 max_tokens 截断告警，说明思考把输出预算吃光了）");
             } else {
                 AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
             }
@@ -210,12 +212,13 @@ public final class AiClient {
 
     /**
      * 只截取开头用于日志，避免刷屏；换行压成空格。
+     * 颜文字里的字符在 GBK 控制台上会让下游编码器崩掉，这里统一转义。
      */
     private static String preview(String content) {
         if (content == null) {
             return "null";
         }
-        String text = content.replace("\r", " ").replace("\n", " ").trim();
+        String text = ConsoleSafe.escape(content.replace("\r", " ").replace("\n", " ").trim());
         return text.length() <= LOG_PREVIEW_LENGTH
                 ? text
                 : text.substring(0, LOG_PREVIEW_LENGTH) + "…";

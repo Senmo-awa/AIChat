@@ -30,6 +30,23 @@ public final class Endpoints {
         return "openai";
     }
 
+    /**
+     * GLM 系列（bigmodel.cn / z.ai 端点，模型名 glm-*）可以用 thinking.type 主动关闭思考。
+     * GLM-5.3 系列强制思考，关不掉，只能靠 max_tokens 兜底。
+     */
+    public static boolean supportsThinkingToggle(String url, String model) {
+        String normalizedUrl = url == null ? "" : url.toLowerCase(Locale.ROOT);
+        String normalizedModel = model == null ? "" : model.trim().toLowerCase(Locale.ROOT);
+        boolean glmModel = normalizedModel.startsWith("glm-")
+                || normalizedModel.startsWith("glm4")
+                || normalizedModel.startsWith("charglm");
+        boolean glmHost = normalizedUrl.contains("bigmodel.cn") || normalizedUrl.contains("z.ai");
+        if (!glmModel && !glmHost) {
+            return false;
+        }
+        return !normalizedModel.startsWith("glm-5.3");
+    }
+
     public static String chatCompletions(String url) {
         String normalized = stripTrailingSlash(url == null ? "" : url.trim());
         if (normalized.isEmpty()) {

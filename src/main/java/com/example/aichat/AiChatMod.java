@@ -10,6 +10,7 @@ import com.example.aichat.usage.UsageStore;
 import net.fabricmc.api.DedicatedServerModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents;
+import net.fabricmc.loader.api.FabricLoader;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
@@ -30,6 +31,15 @@ public class AiChatMod implements DedicatedServerModInitializer {
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) ->
                 AiChatCommand.register(dispatcher));
 
-        LOGGER.info("AI Chat 已加载，配置目录: {}", ConfigManager.dir());
+        LOGGER.info("AI Chat v{} 已加载，配置目录: {}", version(), ConfigManager.dir());
+    }
+
+    /**
+     * 启动日志带上版本号，排查「服务器到底跑的哪个 jar」时不用猜。
+     */
+    private static String version() {
+        return FabricLoader.getInstance().getModContainer("aichat")
+                .map(container -> container.getMetadata().getVersion().getFriendlyString())
+                .orElse("unknown");
     }
 }

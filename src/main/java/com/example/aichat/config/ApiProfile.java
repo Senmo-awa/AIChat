@@ -16,6 +16,7 @@ public record ApiProfile(
         boolean sendThinkingField,
         String reasoningEffort,
         int maxOutputTokens,
-        int thinkingBudgetTokens
+        int thinkingBudgetTokens,
+        boolean systemInUserMessage
 ) {
 }

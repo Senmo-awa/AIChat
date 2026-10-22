@@ -24,9 +24,10 @@ package com.example.aichat.config;
  * buffer_delay_seconds: 最后一条消息后等待多少秒再发送
  * buffer_max_messages: 缓冲区最多条数，满了立即发送
  * buffer_max_chars: 缓冲区最多字符数，满了立即发送
+ * system_prompt_in_user: 把系统提示词一并放进最后一条用户消息，默认 true
  */
 public class ModConfig {
-    public int config_version = 2;
+    public int config_version = 3;
     public String api_url = "https://api.deepseek.com/chat/completions";
     public String api_key = "";
     public String model = "deepseek-flash";
@@ -54,4 +55,11 @@ public class ModConfig {
     public int buffer_delay_seconds = 5;
     public int buffer_max_messages = 10;
     public int buffer_max_chars = 500;
+    /**
+     * 是否把系统提示词（含 JSON 格式契约、知识库文件列表、人设）再拼进最后一条用户消息。
+     * 部分中转站/兼容端点会把 system 角色整条丢弃，导致模组的提示词从未到达模型，
+     * 表现为模型自由发挥、不输出 JSON、瞎猜知识库文件名。默认开启；接口确实支持
+     * system 时可以设为 false，省一份重复的提示词 token。
+     */
+    public boolean system_prompt_in_user = true;
 }

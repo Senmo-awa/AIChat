@@ -64,6 +64,7 @@ gradlew.bat build
 | `buffer_delay_seconds` | 最后一条消息后等待秒数，默认 5 |
 | `buffer_max_messages` | 缓冲区最多消息条数，默认 10，满了立即发送 |
 | `buffer_max_chars` | 缓冲区最多字符数，默认 500，满了立即发送 |
+| `system_prompt_in_user` | 把系统提示词（格式契约 + 文件列表 + 人设）再拼进最后一条用户消息，默认 `true`。部分中转站会把 `system` 角色整条丢弃，导致模组的提示词到不了模型（表现为模型不输出 JSON、瞎猜知识库文件名）；接口确实支持 `system` 时可设为 `false` 省一份重复 token |
 
 运行期状态保存在 `config/aichat/state.json`（全局开关、调试模式、禁止列表、玩家模式），
 token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查看。
@@ -94,6 +95,9 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 说明：
 
 - 默认不发送 `thinking` 字段。部分平台（如千问 MaaS）收到关闭思考的参数后不会返回 `tool_calls`，因此需要工具调用时请保持 `send_thinking_field: false`。
+- 判断模型（双模型模式的 `judge`）在智谱 GLM 平台（`bigmodel.cn` / `z.ai` / `glm-*`）上会自动关闭思考，避免推理 token 吃满输出预算；`glm-5.3` 系列强制思考，不走该逻辑。
+- 不少中转站 / 兼容端点会**悄悄丢掉 `system` 角色**和 `response_format`。表现是：模型把服务器事件当成「用户让我分析日志」，回一段散文或 markdown，判断永远失败；模型还会瞎猜知识库文件名。`system_prompt_in_user`（默认 `true`）会把系统提示词再拼进最后一条用户消息，遇到上述现象请保持开启；接口确实支持 `system` 时设 `false` 可省约一份提示词 token。
+- 推理模型的思考 token 同样计入 `max_tokens`，预算给小了会得到 `finish_reason=length` + 空 `content`。模组遇到这种情况会自动放大预算重试一次，判断模型的默认预算是 1024。
 - OpenAI 推理模型可用 `reasoning_effort` 控制强度。
 - Anthropic 的思考开关同样由 `enable_thinking` 控制，预算由 `thinking_budget_tokens` 指定。
 - OpenAI Responses API、Gemini 原生 `generateContent` 不在支持范围，请使用各自的 Chat Completions 兼容端点。
@@ -157,7 +161,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
     "model": "deepseek-flash",
     "api_type": "auto",
     "system_prompt_file": "judge_prompt.txt",
-    "max_output_tokens": 256,
+    "max_output_tokens": 1024,
     "thinking_budget_tokens": 1024
   },
   "reply": {
@@ -178,7 +182,8 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - `reply` 只在需要回复时调用，负责生成内容；是否发送知识库工具由 `config.json` 的 `enable_tools` 控制。
 - `api_url` / `api_key` / `model` / `api_type` 留空时自动回退到 `config.json` 的同名配置，因此可以只填一套先跑通。
 - 两份默认提示词是 `judge_prompt.txt` 和 `reply_prompt.txt`，可以直接编辑。
-- 判断模型只看当前事件；回复模型会收到最近 `max_context_messages` 条历史。
+- 判断模型和回复模型都会收到最近 `max_context_messages` 条历史。
+- 判断模型的默认输出预算是 1024 token；如果用的是默认开启思考的推理模型（如 GLM-4.7 系列），模组会自动发送 `"thinking": {"type": "disabled"}` 关闭思考，并在遇到 `finish_reason=length` 且 `content` 为空时自动放大预算重试一次。GLM-5.3 系列强制思考，只能靠调大 `max_output_tokens` 解决。
 - 关闭双模型模式只需把 `dual_model_enabled` 改回 `false`，然后执行 `/aichat reload`。
 
 ## 配置升级
@@ -199,13 +204,14 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - AI 广播会逐个玩家投递：`off` 玩家收不到，`onlyread` 和 `on` 玩家正常接收。
 - 玩家加入时发送欢迎消息；退出默认忽略。可在 `system_prompt.txt` 中调整。
 - `/say`、`/me` 等命令消息不会触发 AI。
-- 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；文件读取受白名单和路径校验限制，最多两轮请求。`enable_tools` 为 `false` 时不发送工具定义，模型不会读取知识库。
+- 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；工具描述里直接列出真实文件名，文件读取受白名单和路径校验限制。模型可连续多轮读文件（默认最多 4 轮，之后会发一次不带工具的请求收尾），单个文件超过 6000 字符会截断。`enable_tools` 为 `false` 时不发送工具定义，模型不会读取知识库。
 - `/aichat reload` 重新读取 `config.json` 与 `system.json`，失败时保留原配置并提示错误。
+- 控制台编码兼容：中文 Windows 的控制台/日志编码是 GBK，AI 回复里的颜文字常含 GBK 表示不了的字符（`｡` `・` `∀` `ﾟ` `♪` `๑` 等）。这类字符写进控制台会让 MCDR 等包装器抛 `UnicodeEncodeError`，严重时 MCDR 主循环 CRITICAL 刷屏。模组会按 `sun.stdout.encoding` / `native.encoding` 判断编码，只对控制台那份做处理（控制台丢掉表示不了的字符，debug 日志转义成 `\uXXXX`），玩家聊天框仍是完整颜文字；UTF-8 控制台不受影响。若要根治，可给包装器进程设置 `PYTHONUTF8=1`（MCDR）让他自己的 stdout 也用 UTF-8。
 - 不创建假玩家，不执行游戏操作。
 
 ## 测试
 
-1. 配置 API Key，启动服务端，确认日志出现 `AI Chat 已加载`。
+1. 配置 API Key，启动服务端，确认日志出现 `AI Chat v<版本> 已加载`（版本号能直接看出跑的是哪个 jar）。
 2. 发送普通聊天，确认收到带前缀的回复。
 3. 连续对话两句，确认 AI 能引用上一句（上下文记忆）。
 4. 执行 `/say hi`，确认不触发 AI。
@@ -217,6 +223,14 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 
 - 上下文条数由 `max_context_messages` 控制，调大能记住更多内容，但每次请求的 prompt token 也会增加。
 - API Key 以明文保存在 `config/aichat/config.json` 与 `system.json`，请限制配置文件访问权限。
+
+### 排查「AI 不回复」
+
+1. 看启动日志的版本号，确认服务端跑的是哪个 jar。
+2. `/aichat debug` 打开调试，再发一句聊天，看日志里的 `[debug] 解析结果：reply=...`。
+3. 如果模型在「分析日志 / 总结事件」而不是输出 `{"action":...}`：说明提示词没到模型，多半是中转站丢了 `system`，确认 `system_prompt_in_user` 为 `true`。
+4. 如果响应里 `content` 为空且 `finish_reason=length`：输出预算被思考 token 吃光了，调大 `max_output_tokens`（或换非推理模型）。
+5. 如果看到「工具调用达到 N 轮上限」：模型在读知识库时反复猜文件名，检查 `knowledge/` 目录里是否真有它要的文件。
 
 ## 许可证
 

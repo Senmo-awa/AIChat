@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.6.2 - 2026-10-22
+
+### Changed
+
+- 启动日志改为 `AI Chat v<版本> 已加载，配置目录: ...`，排查「服务器上跑的是哪个 jar」时不用再猜。
+
+## 1.6.1 - 2026-10-22
+
+### Fixed
+
+- 中文 Windows（GBK 控制台）下，AI 回复里的颜文字常含 GBK 表示不了的字符（`｡`、`・`、`∀`、`ﾟ`、`♪`、`๑`、`❤` 等）。这些字符写进控制台时会让 MCDR 等包装器抛 `UnicodeEncodeError: 'gbk' codec can't encode character`，严重时 MCDR 主循环直接 CRITICAL 刷屏。现在按 `sun.stdout.encoding` / `native.encoding` 判断控制台编码，只对**控制台那份**做处理：广播给控制台时丢掉表示不了的字符，debug 日志里转义成 `\uXXXX`；玩家聊天框走网络 UTF-8，仍是完整颜文字。UTF-8 控制台不受影响。
+
+## 1.6.0 - 2026-10-22
+
+### Fixed
+
+- 部分中转站 / 兼容端点会把 `system` 角色整条丢弃（实测：系统消息里放校准码，模型答「未提供」；`response_format` 也会被静默忽略）。此时模组的 JSON 格式契约、知识库文件列表、人设全部到不了模型，表现为模型输出散文和 markdown、判断永远失败。新增 `system_prompt_in_user`（默认 `true`）：把系统提示词再拼进最后一条用户消息，并用【当前事件】标记真正要回应的内容。
+- 工具描述里补上知识库真实文件名。此前只写「必须是可用知识库文件列表中的文件名」而不给列表，模型只能瞎猜（`小墨.md`、`knowledge.md`、`file_list` 之类），全部读取失败。
+- 工具调用从「只处理 1 轮、只取第一个 tool_call」改成多轮循环（默认最多 4 轮），每轮把所有 `tool_call` 结果都回灌；超过上限后再发一次不带工具的请求，逼模型直接给结论。此前第二轮又返回 `tool_calls` 时 `content` 为空，整条消息被丢弃。
+- 单个知识库文件回灌超过 6000 字符时截断，避免长文件吃掉大量 prompt token。
+- 推理模型（如 `glm-4.7-flash`）作为判断模型时 `content` 为空、AI 永远不回复：判断模型默认 `max_output_tokens` 从 256 提高到 1024，推理 token 同样占用该预算。
+- 遇到 `finish_reason=length` 且 `content` 为空时，自动把 `max_tokens` 放大（至少 1024，上限 4096）重试一次，重试失败才按不回复处理并给出明确告警。
+- 判断模型在 GLM 平台（`bigmodel.cn` / `z.ai` / `glm-*`）上自动发送 `"thinking": {"type": "disabled"}`，避免思考把输出预算吃光；`glm-5.3` 系列强制思考，不走该逻辑。
+
+### Changed
+
+- `config.json` 升到 v3，升级时自动备份并补齐 `system_prompt_in_user`。
+- 判断模型返回空内容时的警告补充了排查提示。
+- README 补充模型兼容性说明与「AI 不回复」排查清单。
+
 ## 1.5.4 - 2026-10-20
 
 ### Fixed
