@@ -59,6 +59,12 @@ gradlew.bat build
 | `send_thinking_field` | 是否发送 `thinking` 字段，默认 `false`；开启后部分平台（如千问 MaaS）会不返回 `tool_calls` |
 | `max_output_tokens` | 最大输出 token，`0` 表示不发送（Anthropic 默认 4096） |
 | `thinking_budget_tokens` | Anthropic 思考预算，默认 1024 |
+| `search_enabled` | 是否允许模型调用 `web_search` 联网搜索，默认 `true`；关闭后不注册该工具，行为与 1.6.2 一致 |
+| `search_provider` | 搜索后端：`bing`（默认，抓 cn.bing.com，零 Key）/ `searxng`（自建实例）/ `tavily` / `bocha` / `zhipu` |
+| `search_api_url` | 搜索接口地址，留空用 provider 默认端点；`searxng` 必须填（如 `http://127.0.0.1:8888`） |
+| `search_api_key` | 搜索 API Key；`bing` / `searxng` 留空即可 |
+| `search_max_results` | 一次搜索最多取几条结果，默认 5，上限 10 |
+| `search_timeout_seconds` | 搜索请求超时（秒），默认 10，与对话超时相互独立 |
 | `config_version` | 配置文件版本，升级时自动补齐新字段 |
 | `buffer_enabled` | 是否启用消息缓冲（防抖合并，省 token），默认 `true` |
 | `buffer_delay_seconds` | 最后一条消息后等待秒数，默认 5 |
@@ -186,6 +192,31 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - 判断模型的默认输出预算是 1024 token；如果用的是默认开启思考的推理模型（如 GLM-4.7 系列），模组会自动发送 `"thinking": {"type": "disabled"}` 关闭思考，并在遇到 `finish_reason=length` 且 `content` 为空时自动放大预算重试一次。GLM-5.3 系列强制思考，只能靠调大 `max_output_tokens` 解决。
 - 关闭双模型模式只需把 `dual_model_enabled` 改回 `false`，然后执行 `/aichat reload`。
 
+## 联网搜索
+
+模组内置 `web_search` 工具：模型判断需要外部实时信息（新闻、天气、比分、价格等）时调用它，模组去搜索接口取结果，再把「标题 + 摘要 + 链接」回灌给模型组织回答。**搜索由模组执行，与模型平台无关**——中转站不支持服务端搜索也能用。
+
+| provider | 端点 | Key | 说明 |
+|---|---|---|---|
+| `bing`（默认） | `https://cn.bing.com/search` | 不需要 | 抓结果页 HTML，国内直连；最省事，但属于页面抓取，Bing 改版或要求验证时可能失效 |
+| `searxng` | 自建实例 `/search?format=json` | 不需要 | 需要自己有 SearXNG，`search_api_url` 必填，零费用不限量 |
+| `tavily` | `https://api.tavily.com/search` | 需要 | 有免费额度，境外节点，响应偏慢 |
+| `bocha` | `https://api.bochaai.com/v1/web-search` | 需要 | 中文结果质量好，按次计费 |
+| `zhipu` | `https://open.bigmodel.cn/api/paas/v4/web_search` | 需要 | 国内直连，单价低 |
+
+约束与行为：
+
+- 一次对话最多搜索一次，防模型反复搜索烧 token；结果总长度上限 4000 字符（单条摘要 200 字符），超出截断。
+- 搜索失败不重试，直接把 `搜索失败: <原因>` 当工具结果回灌，并写一条 WARN 日志，让模型照实告诉玩家「没搜到」而不是编造。
+- 搜索在 `aichat-worker` 线程执行，不阻塞服务端主线程。
+- 关闭：`search_enabled: false`；`provider` 需要 Key 但没填 Key 时，工具不会被注册（模型看不到搜索能力，不会反复尝试失败）。
+- 想让模型主动用搜索，在 `system_prompt.txt` 里补一条规则即可（默认模板已含）：
+
+  ```
+  9. 如果当前事件需要外部实时信息（新闻、天气、比分、价格、人物近况等），可以调用 web_search 工具联网搜索，一次对话最多搜一次，搜索词要简洁。
+  10. 搜索结果只是参考，可能过期或不准；引用时说明来源，搜不到或搜索失败就照实说“没搜到”，绝不编造新闻、数字或链接。
+  ```
+
 ## 配置升级
 
 `config.json` 与 `system.json` 都带版本号。模组启动或执行 `/aichat reload` 时，
@@ -205,6 +236,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - 玩家加入时发送欢迎消息；退出默认忽略。可在 `system_prompt.txt` 中调整。
 - `/say`、`/me` 等命令消息不会触发 AI。
 - 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；工具描述里直接列出真实文件名，文件读取受白名单和路径校验限制。模型可连续多轮读文件（默认最多 4 轮，之后会发一次不带工具的请求收尾），单个文件超过 6000 字符会截断。`enable_tools` 为 `false` 时不发送工具定义，模型不会读取知识库。
+- 模型可通过 `web_search` 联网搜索（见「联网搜索」），一次对话最多一次；`search_enabled` 为 `false` 时不注册该工具。
 - `/aichat reload` 重新读取 `config.json` 与 `system.json`，失败时保留原配置并提示错误。
 - 控制台编码兼容：中文 Windows 的控制台/日志编码是 GBK，AI 回复里的颜文字常含 GBK 表示不了的字符（`｡` `・` `∀` `ﾟ` `♪` `๑` 等）。这类字符写进控制台会让 MCDR 等包装器抛 `UnicodeEncodeError`，严重时 MCDR 主循环 CRITICAL 刷屏。模组会按 `sun.stdout.encoding` / `native.encoding` 判断编码，只对控制台那份做处理（控制台丢掉表示不了的字符，debug 日志转义成 `\uXXXX`），玩家聊天框仍是完整颜文字；UTF-8 控制台不受影响。若要根治，可给包装器进程设置 `PYTHONUTF8=1`（MCDR）让他自己的 stdout 也用 UTF-8。
 - 不创建假玩家，不执行游戏操作。

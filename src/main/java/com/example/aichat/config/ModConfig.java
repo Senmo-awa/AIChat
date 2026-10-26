@@ -51,6 +51,24 @@ public class ModConfig {
     public boolean send_thinking_field = false;
     public int max_output_tokens = 0;
     public int thinking_budget_tokens = 1024;
+    /**
+     * 是否允许模型调用 web_search 工具联网搜索。关闭时不注册该工具，行为与 1.6.2 一致。
+     */
+    public boolean search_enabled = true;
+    /**
+     * 搜索后端：bing（默认，抓 cn.bing.com，零 Key）/ searxng（自建实例）/ tavily / bocha / zhipu。
+     */
+    public String search_provider = "bing";
+    /**
+     * 搜索接口地址。留空使用 provider 的默认端点；searxng 必须填（如 http://127.0.0.1:8888）。
+     */
+    public String search_api_url = "";
+    /** 商业搜索 API 的 Key；bing / searxng 留空即可。 */
+    public String search_api_key = "";
+    /** 一次搜索最多取几条结果，上限 10。 */
+    public int search_max_results = 5;
+    /** 搜索请求超时（秒），与对话请求超时相互独立。 */
+    public int search_timeout_seconds = 10;
     public boolean buffer_enabled = true;
     public int buffer_delay_seconds = 5;
     public int buffer_max_messages = 10;

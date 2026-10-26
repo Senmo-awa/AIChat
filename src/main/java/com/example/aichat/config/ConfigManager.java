@@ -32,7 +32,7 @@ public final class ConfigManager {
      * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
      */
     private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
-    private static final int CURRENT_CONFIG_VERSION = 3;
+    private static final int CURRENT_CONFIG_VERSION = 4;
     private static final int CURRENT_SYSTEM_VERSION = 1;
 
     private static volatile ModConfig config;

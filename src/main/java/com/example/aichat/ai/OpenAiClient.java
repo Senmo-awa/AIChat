@@ -4,7 +4,9 @@ import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
+import com.example.aichat.config.ModConfig;
 import com.example.aichat.knowledge.KnowledgeReader;
+import com.example.aichat.search.WebSearch;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.text.ConsoleSafe;
 import com.example.aichat.usage.TokenUsage;
@@ -22,6 +24,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -55,7 +58,7 @@ public final class OpenAiClient {
         JsonObject body = baseBody(profile);
         body.add("messages", messages);
 
-        return toolRound(profile, messages, body, 1, TokenUsage.ZERO);
+        return toolRound(profile, messages, body, 1, TokenUsage.ZERO, 0);
     }
 
     /**
@@ -77,7 +80,8 @@ public final class OpenAiClient {
      * 超过 MAX_TOOL_ROUNDS 后再发一次不带工具的请求，逼模型直接给出最终 JSON。
      */
     private static CompletableFuture<RawResult> toolRound(
-            ApiProfile profile, JsonArray messages, JsonObject body, int round, TokenUsage used) {
+            ApiProfile profile, JsonArray messages, JsonObject body, int round, TokenUsage used,
+            int searchUsed) {
         boolean lastChance = round > MAX_TOOL_ROUNDS;
         JsonObject requestBody = body;
         if (lastChance && requestBody.has("tools")) {
@@ -99,6 +103,8 @@ public final class OpenAiClient {
             }
 
             messages.add(message);
+            // 捕获变量不能改，用一个一格数组当可变计数器
+            int[] searchBudget = {searchUsed};
             for (JsonElement element : toolCalls.getAsJsonArray()) {
                 if (!element.isJsonObject()) {
                     continue;
@@ -106,27 +112,37 @@ public final class OpenAiClient {
                 JsonObject toolCall = element.getAsJsonObject();
                 String callId = toolCall.has("id") && !toolCall.get("id").isJsonNull()
                         ? toolCall.get("id").getAsString() : "";
-                String fileContent;
-                try {
-                    String fileName = parseFileName(toolCall);
-                    if (fileName == null || fileName.isBlank()) {
-                        throw new IllegalArgumentException("缺少 file_name");
+                String toolContent;
+                if ("web_search".equals(functionName(toolCall))) {
+                    if (searchBudget[0] > 0) {
+                        // 防刷：一次对话只允许搜一次，避免模型反复搜索把 token 和接口额度烧光
+                        toolContent = "本次对话已经搜索过一次，请直接基于上面的搜索结果回答，不要重复搜索。";
+                    } else {
+                        toolContent = truncate(runSearch(toolCall));
+                        searchBudget[0]++;
                     }
-                    fileContent = truncate(KnowledgeReader.read(fileName));
-                } catch (Exception e) {
-                    fileContent = "读取失败: " + e.getMessage();
+                } else {
+                    try {
+                        String fileName = stringArg(toolCall, "file_name");
+                        if (fileName == null || fileName.isBlank()) {
+                            throw new IllegalArgumentException("缺少 file_name");
+                        }
+                        toolContent = truncate(KnowledgeReader.read(fileName));
+                    } catch (Exception e) {
+                        toolContent = "读取失败: " + e.getMessage();
+                    }
                 }
                 JsonObject toolMsg = new JsonObject();
                 toolMsg.addProperty("role", "tool");
                 toolMsg.addProperty("tool_call_id", callId);
-                toolMsg.addProperty("content", fileContent);
+                toolMsg.addProperty("content", toolContent);
                 messages.add(toolMsg);
             }
 
             JsonObject nextBody = baseBody(profile);
             nextBody.add("messages", messages);
             int nextRound = round + 1;
-            return toolRound(profile, messages, nextBody, nextRound, usage);
+            return toolRound(profile, messages, nextBody, nextRound, usage, searchBudget[0]);
         });
     }
 
@@ -140,19 +156,69 @@ public final class OpenAiClient {
         return content.substring(0, MAX_TOOL_CONTENT_CHARS) + "\n…（文件过长，已截断）";
     }
 
+    private static String functionName(JsonObject toolCall) {
+        JsonElement function = toolCall.get("function");
+        if (function == null || !function.isJsonObject()) {
+            return "";
+        }
+        JsonElement name = function.getAsJsonObject().get("name");
+        return name == null || name.isJsonNull() ? "" : name.getAsString();
+    }
+
     /**
      * OpenAI 兼容格式中 function.arguments 是 JSON 字符串，不是对象。
+     * 解析失败一律当没有该参数处理，交给调用方报错。
      */
-    private static String parseFileName(JsonObject toolCall) {
+    private static String stringArg(JsonObject toolCall, String field) {
         JsonObject function = toolCall.getAsJsonObject("function");
+        if (function == null) {
+            return null;
+        }
         JsonElement argsElement = function.get("arguments");
         if (argsElement == null || argsElement.isJsonNull()) {
             return null;
         }
         String raw = argsElement.isJsonPrimitive() ? argsElement.getAsString() : argsElement.toString();
-        JsonObject args = JsonParser.parseString(raw).getAsJsonObject();
-        JsonElement name = args.get("file_name");
-        return name == null || name.isJsonNull() ? null : name.getAsString();
+        JsonObject args;
+        try {
+            args = JsonParser.parseString(raw).getAsJsonObject();
+        } catch (RuntimeException e) {
+            return null;
+        }
+        JsonElement value = args.get(field);
+        return value == null || value.isJsonNull() ? null : value.getAsString();
+    }
+
+    /**
+     * 真正去联网搜索。失败不重试、不抛给上层：把失败原因当 tool 结果回灌，
+     * 让模型照实告诉玩家"没搜到"，比让它瞎编强。
+     */
+    private static String runSearch(JsonObject toolCall) {
+        ModConfig config = ConfigManager.get();
+        String query = stringArg(toolCall, "query");
+        if (query == null || query.isBlank()) {
+            return "搜索失败: 缺少 query 参数";
+        }
+        long start = System.currentTimeMillis();
+        try {
+            String result = WebSearch.search(
+                    config.search_provider,
+                    config.search_api_url,
+                    config.search_api_key,
+                    query,
+                    config.search_max_results,
+                    config.search_timeout_seconds);
+            if (StateManager.isDebug()) {
+                AiChatMod.LOGGER.info("[debug] 联网搜索 provider={} query={} 用时={}ms",
+                        config.search_provider, ConsoleSafe.escape(query),
+                        System.currentTimeMillis() - start);
+            }
+            return result;
+        } catch (Exception e) {
+            AiChatMod.LOGGER.warn("联网搜索失败（provider={}）：{}",
+                    config.search_provider, ConsoleSafe.escape(e.getMessage()));
+            return "搜索失败: " + e.getMessage() + "。请如实告诉玩家这次没搜到，不要编造结果。";
+        }
     }
 
     /**
@@ -304,7 +370,63 @@ public final class OpenAiClient {
         function.add("parameters", parameters);
         tool.add("function", function);
         tools.add(tool);
+
+        if (searchAvailable()) {
+            tools.add(webSearchTool());
+        }
         return tools;
+    }
+
+    /**
+     * 搜索工具只在配置齐全时才注册：宁可让模型看不到它，也不要让玩家看到"搜索总是失败"。
+     */
+    private static boolean searchAvailable() {
+        ModConfig config = ConfigManager.get();
+        if (!config.search_enabled) {
+            return false;
+        }
+        String provider = config.search_provider == null
+                ? "" : config.search_provider.trim().toLowerCase(Locale.ROOT);
+        if (provider.isBlank()) {
+            return false;
+        }
+        if ("searxng".equals(provider)) {
+            return config.search_api_url != null && !config.search_api_url.isBlank();
+        }
+        if (WebSearch.requiresApiKey(provider)) {
+            return config.search_api_key != null && !config.search_api_key.isBlank();
+        }
+        return true;
+    }
+
+    private static JsonObject webSearchTool() {
+        JsonObject tool = new JsonObject();
+        tool.addProperty("type", "function");
+
+        JsonObject function = new JsonObject();
+        function.addProperty("name", "web_search");
+        function.addProperty("description",
+                "联网搜索实时信息：新闻、天气、价格、赛事、人物近况等当前事实。"
+                        + "只有确实需要外部最新信息时才调用，一次对话最多搜一次。"
+                        + "搜不到就照实说，不要编造。");
+
+        JsonObject parameters = new JsonObject();
+        parameters.addProperty("type", "object");
+
+        JsonObject properties = new JsonObject();
+        JsonObject query = new JsonObject();
+        query.addProperty("type", "string");
+        query.addProperty("description", "搜索关键词，用简洁的短语，不要带整段聊天内容");
+        properties.add("query", query);
+        parameters.add("properties", properties);
+
+        JsonArray required = new JsonArray();
+        required.add("query");
+        parameters.add("required", required);
+
+        function.add("parameters", parameters);
+        tool.add("function", function);
+        return tool;
     }
 
     private static CompletableFuture<JsonObject> send(ApiProfile profile, JsonObject body) {

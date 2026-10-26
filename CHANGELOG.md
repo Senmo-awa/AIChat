@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.7.0 - 2026-10-26
+
+### Added
+
+- **联网搜索**：新增 `web_search` 工具。模型需要外部实时信息（新闻、天气、比分、价格等）时调用，模组去搜索接口取结果再回灌给模型。搜索由模组执行，不依赖模型平台是否提供服务端搜索——中转站、DeepSeek、GLM、Kimi 等一律可用。
+- 搜索后端可选：`bing`（默认，抓 cn.bing.com，零 Key、国内直连）、`searxng`（自建实例，零费用）、`tavily` / `bocha` / `zhipu`（商业 API，需 Key）。
+- 新增配置项：`search_enabled`、`search_provider`、`search_api_url`、`search_api_key`、`search_max_results`、`search_timeout_seconds`。
+
+### Changed
+
+- `config.json` 升到 v4，升级时自动备份并补齐搜索相关字段。旧配置默认 `search_enabled: true` + `search_provider: "bing"`，升级后即可用，不需要额外 Key。
+- 工具分派从「只认 `read_knowledge_file`」改成按 `function.name` 分派，知识库与搜索共用同一套多轮循环。
+- 默认 `system_prompt.txt` 增加搜索使用规则（第 9、10 条）。
+
+### Behavior
+
+- 一次对话最多搜索一次；搜索失败不重试，把原因回灌给模型并写 WARN 日志，由模型照实告诉玩家「没搜到」，避免编造。
+- 搜索结果总长度上限 4000 字符、单条摘要 200 字符，防止吃掉 prompt 预算。
+- `search_enabled: false` 或 provider 缺 Key 时不注册工具，行为与 1.6.2 一致。
+
 ## 1.6.2 - 2026-10-22
 
 ### Changed
