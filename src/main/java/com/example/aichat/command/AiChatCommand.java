@@ -1,6 +1,7 @@
 package com.example.aichat.command;
 
 import com.example.aichat.config.ConfigManager;
+import com.example.aichat.memory.MemoryStore;
 import com.example.aichat.state.PlayerMode;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.usage.UsageStore;
@@ -59,6 +60,9 @@ public final class AiChatCommand {
                 .then(Commands.literal("banlist")
                         .requires(ADMIN)
                         .executes(ctx -> showBanList(ctx.getSource())))
+                .then(Commands.literal("memory")
+                        .requires(ADMIN)
+                        .executes(ctx -> showMemory(ctx.getSource())))
                 .then(Commands.literal("on")
                         .executes(ctx -> setMode(ctx.getSource(), PlayerMode.ON)))
                 .then(Commands.literal("off")
@@ -100,6 +104,7 @@ public final class AiChatCommand {
                 /aichat reload —— 热重载配置文件
                 /aichat enable|disable —— 全局开启/关闭 AI 聊天
                 /aichat debug —— 切换调试模式（聊天框 token 用量 + 日志原始响应）
+                /aichat memory —— 查看记忆文件夹（开关见 config.json 的 memory_enabled）
                 /aichat ban <玩家> —— 不再回复该玩家（unban 解除，banlist 查看）""";
         source.sendSuccess(() -> Component.literal(text), false);
         return 1;
@@ -201,6 +206,29 @@ public final class AiChatCommand {
         String message = text.toString();
         source.sendSuccess(() -> Component.literal(message), false);
         return banned.size();
+    }
+
+    private static int showMemory(CommandSourceStack source) {
+        if (!MemoryStore.enabled()) {
+            source.sendSuccess(() -> Component.literal(
+                    "记忆功能当前关闭（config.json 里把 memory_enabled 设为 true 后执行 /aichat reload）。"), false);
+            return 0;
+        }
+        List<MemoryStore.Entry> entries = MemoryStore.entries();
+        StringBuilder text = new StringBuilder()
+                .append("记忆目录：").append(MemoryStore.dirName())
+                .append("/（单文件上限 ").append(MemoryStore.limitKb()).append(" KB）");
+        if (entries.isEmpty()) {
+            text.append("\n（暂无记忆文件）");
+        } else {
+            text.append("\n共 ").append(entries.size()).append(" 个文件：");
+            for (MemoryStore.Entry entry : entries) {
+                text.append("\n - ").append(entry.name()).append("  ").append(entry.humanSize());
+            }
+        }
+        String message = text.toString();
+        source.sendSuccess(() -> Component.literal(message), false);
+        return entries.size();
     }
 
     private static int setMode(CommandSourceStack source, PlayerMode mode)

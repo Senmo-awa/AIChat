@@ -25,6 +25,9 @@ package com.example.aichat.config;
  * buffer_max_messages: 缓冲区最多条数，满了立即发送
  * buffer_max_chars: 缓冲区最多字符数，满了立即发送
  * system_prompt_in_user: 把系统提示词一并放进最后一条用户消息，默认 true
+ * memory_enabled: 是否开启记忆功能（AI 可读写记忆文件），默认 true
+ * memory_dir: 记忆文件夹名（相对于 config/aichat/）
+ * memory_max_file_kb: 单个记忆文件上限（KB），超限由 AI 自行压缩
  */
 public class ModConfig {
     public int config_version = 3;
@@ -69,6 +72,16 @@ public class ModConfig {
     public int search_max_results = 5;
     /** 搜索请求超时（秒），与对话请求超时相互独立。 */
     public int search_timeout_seconds = 10;
+    /**
+     * 是否开启记忆功能：AI 可以在记忆文件夹里读写纯文本笔记，跨对话保存。
+     * 开启时会顺带打开工具通道——即使 enable_tools 为 false，也会发送记忆工具定义。
+     * 默认关闭：开启要付出一份工具定义的 token，且部分中转站在带工具时不返回 tool_calls。
+     */
+    public boolean memory_enabled = false;
+    /** 记忆文件夹名（相对于 config/aichat/）。不填按 memory 处理。 */
+    public String memory_dir = "memory";
+    /** 单个记忆文件的字节上限（KB）。写入超过该值时被拒绝，由 AI 自己压缩后覆写。 */
+    public int memory_max_file_kb = 8;
     public boolean buffer_enabled = true;
     public int buffer_delay_seconds = 5;
     public int buffer_max_messages = 10;

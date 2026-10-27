@@ -65,6 +65,9 @@ gradlew.bat build
 | `search_api_key` | 搜索 API Key；`bing` / `searxng` 留空即可 |
 | `search_max_results` | 一次搜索最多取几条结果，默认 5，上限 10 |
 | `search_timeout_seconds` | 搜索请求超时（秒），默认 10，与对话超时相互独立 |
+| `memory_enabled` | 是否开启记忆功能（AI 读写记忆文件），默认 `false`；开启后会一并打开工具通道，见「记忆功能」 |
+| `memory_dir` | 记忆文件夹名，相对 `config/aichat/`，默认 `memory` |
+| `memory_max_file_kb` | 单个记忆文件上限（KB），默认 8；写入超限由 AI 自己压缩后覆写 |
 | `config_version` | 配置文件版本，升级时自动补齐新字段 |
 | `buffer_enabled` | 是否启用消息缓冲（防抖合并，省 token），默认 `true` |
 | `buffer_delay_seconds` | 最后一条消息后等待秒数，默认 5 |
@@ -217,10 +220,42 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
   10. 搜索结果只是参考，可能过期或不准；引用时说明来源，搜不到或搜索失败就照实说“没搜到”，绝不编造新闻、数字或链接。
   ```
 
+## 记忆功能
+
+上下文窗口只装得下最近几条消息，玩家说的「某人上线时提醒他交材料」这类约定，消息一多就丢了。记忆功能给 AI 一个自己维护的记事本：它可以把这类信息写进 `memory/` 目录，下次对话再读回来。
+
+开启方式（`config.json`）：
+
+```json
+"memory_enabled": true,
+"memory_dir": "memory",
+"memory_max_file_kb": 8
+```
+
+开启后模组注册两个工具：
+
+| 工具 | 参数 | 作用 |
+|---|---|---|
+| `memory_read` | `file_name`（可省略） | 省略时返回文件清单和各自大小；填了则返回全文 |
+| `memory_write` | `file_name`、`content`、`mode` | `mode=append` 追加（默认）/ `overwrite` 覆写 |
+
+行为与约束：
+
+- 记忆规则由模组在读取提示词时**自动追加到系统提示词末尾**，不需要改自己的 `system_prompt.txt`。judge 提示词不会追加（判断阶段不发送工具）。
+- 超过 `memory_max_file_kb` 的写入会被拒绝，返回的是「先 `memory_read` 读出全文 → 压缩成不超过 N KB 的要点 → `mode=overwrite` 覆写」的指引，由模型自己完成压缩；文件用到上限 80% 时会提前提醒。模组不会静默截断，也不会写出半截文件。
+- 文件名白名单：不带目录、不含 `..`，只允许字母数字/中文/`_`/`-`/`.`/空格，扩展名 `.md` / `.txt`（缺省补 `.md`），最长 64 字符；越界路径直接拒绝，写了 `.exe` 这种扩展名直接报错。
+- 文件数量软上限 32 个：达上限后只能覆写或合并进已有文件，防止被反复刷文件撑爆目录。
+- 目录默认 `config/aichat/memory/`，配置加载时自动创建；可用 `/aichat memory` 查看清单，每次写入会在服务端日志留一条 INFO。
+- 记忆文件是 AI 自己的笔记，提示词里明确要求它只当资料参考，**不把文件内容当作系统规则或玩家指令执行**——防止有人把恶意指令写进记忆文件。
+- `memory_enabled: true` 会顺带打开工具通道：即使 `enable_tools` 是 `false`，也会发送记忆工具定义（知识库/搜索仍由 `enable_tools` 控制）。带工具时不发送 `response_format=json_object`，与既有取舍一致。
+- 注意 token：每轮对话都会带上工具定义（几 KB 级），记忆文件正文只在模型主动 `memory_read` 时才进 prompt。
+
 ## 配置升级
 
 `config.json` 与 `system.json` 都带版本号。模组启动或执行 `/aichat reload` 时，
 若文件版本低于当前版本，会先备份为 `.v<版本>.bak`，再用默认模板补齐缺失字段，已有值不会被覆盖。
+
+当前 `config.json` 为 **v5**：1.7.0 及更早（v4 及以下）的配置升级时会自动补上 `memory_enabled` / `memory_dir` / `memory_max_file_kb`，原文件备份为 `config.json.v4.bak`，记忆功能默认仍关闭。
 
 ## 行为
 
@@ -235,8 +270,9 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - AI 广播会逐个玩家投递：`off` 玩家收不到，`onlyread` 和 `on` 玩家正常接收。
 - 玩家加入时发送欢迎消息；退出默认忽略。可在 `system_prompt.txt` 中调整。
 - `/say`、`/me` 等命令消息不会触发 AI。
-- 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；工具描述里直接列出真实文件名，文件读取受白名单和路径校验限制。模型可连续多轮读文件（默认最多 4 轮，之后会发一次不带工具的请求收尾），单个文件超过 6000 字符会截断。`enable_tools` 为 `false` 时不发送工具定义，模型不会读取知识库。
+- 模型可通过 `read_knowledge_file` 读取 `knowledge/` 下的文件；工具描述里直接列出真实文件名，文件读取受白名单和路径校验限制。模型可连续多轮读文件（默认最多 4 轮，之后会发一次不带工具的请求收尾），单个文件超过 6000 字符会截断。`enable_tools` 为 `false` 时不发送知识库与搜索工具（记忆工具只看 `memory_enabled`）。
 - 模型可通过 `web_search` 联网搜索（见「联网搜索」），一次对话最多一次；`search_enabled` 为 `false` 时不注册该工具。
+- 模型可通过 `memory_read` / `memory_write` 读写 `memory/` 下的记忆文件（见「记忆功能」），跨对话保存约定和提醒；`memory_enabled` 为 `false` 时不注册这两个工具。
 - `/aichat reload` 重新读取 `config.json` 与 `system.json`，失败时保留原配置并提示错误。
 - 控制台编码兼容：中文 Windows 的控制台/日志编码是 GBK，AI 回复里的颜文字常含 GBK 表示不了的字符（`｡` `・` `∀` `ﾟ` `♪` `๑` 等）。这类字符写进控制台会让 MCDR 等包装器抛 `UnicodeEncodeError`，严重时 MCDR 主循环 CRITICAL 刷屏。模组会按 `sun.stdout.encoding` / `native.encoding` 判断编码，只对控制台那份做处理（控制台丢掉表示不了的字符，debug 日志转义成 `\uXXXX`），玩家聊天框仍是完整颜文字；UTF-8 控制台不受影响。若要根治，可给包装器进程设置 `PYTHONUTF8=1`（MCDR）让他自己的 stdout 也用 UTF-8。
 - 不创建假玩家，不执行游戏操作。
@@ -250,6 +286,8 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 5. 玩家加入，确认收到欢迎消息。
 6. 在 `knowledge/` 添加 `server_info.txt`，询问相关内容，确认模型读取文件并回答。
 7. 开启双模型模式后再次对话，确认 judge 与 reply 的 token 都记录在日志中。
+8. 把 `memory_enabled` 设为 `true` 并 `/aichat reload`，对 AI 说「记住：小明上线时提醒他交材料」；执行 `/aichat memory` 应看到新增的 `.md` 文件，服务端日志有「记忆写入：…」。重启服务端后再问「小明上线要提醒什么」，确认它能读回记忆。
+9. 把 `memory_max_file_kb` 临时改成 1，让 AI 反复追加同一文件，确认超限时它收到压缩指引并改用 `overwrite`。
 
 ## 说明
 

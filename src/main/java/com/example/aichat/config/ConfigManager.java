@@ -2,6 +2,7 @@ package com.example.aichat.config;
 
 import com.example.aichat.AiChatMod;
 import com.example.aichat.knowledge.KnowledgeReader;
+import com.example.aichat.memory.MemoryStore;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
@@ -32,7 +33,7 @@ public final class ConfigManager {
      * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
      */
     private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
-    private static final int CURRENT_CONFIG_VERSION = 4;
+    private static final int CURRENT_CONFIG_VERSION = 5;
     private static final int CURRENT_SYSTEM_VERSION = 1;
 
     private static volatile ModConfig config;
@@ -95,6 +96,9 @@ public final class ConfigManager {
             copyIfMissing(DEFAULT_REPLY_PROMPT_FILE);
 
             Files.createDirectories(modConfigDir.resolve(loaded.knowledge_dir));
+            if (loaded.memory_enabled) {
+                Files.createDirectories(modConfigDir.resolve(loaded.memory_dir));
+            }
         } catch (IOException | JsonParseException e) {
             throw new RuntimeException("无法加载 AI Chat 配置: " + e.getMessage(), e);
         }
@@ -121,6 +125,12 @@ public final class ConfigManager {
         }
         if (target.buffer_max_chars < 1) {
             target.buffer_max_chars = 500;
+        }
+        if (target.memory_dir == null || target.memory_dir.isBlank()) {
+            target.memory_dir = "memory";
+        }
+        if (target.memory_max_file_kb < 1) {
+            target.memory_max_file_kb = 8;
         }
     }
 
@@ -269,6 +279,17 @@ public final class ConfigManager {
      * 读取提示词模板并替换知识库列表、人设占位符。
      */
     public static String readPrompt(String fileName) {
+        return readPrompt(fileName, false);
+    }
+
+    /**
+     * 读取提示词模板。
+     *
+     * @param appendMemoryGuide 是否在末尾追加记忆功能说明。记忆规则由模组生成，
+     *                          不写进用户的 system_prompt.txt——升级时不会覆盖别人改过的提示词，
+     *                          也避免给只有判断任务的 judge 提示词塞它用不到的工具说明。
+     */
+    public static String readPrompt(String fileName, boolean appendMemoryGuide) {
         try {
             String template = Files.readString(modConfigDir.resolve(fileName), StandardCharsets.UTF_8);
             String files = String.join("\n", KnowledgeReader.listFiles());
@@ -276,9 +297,13 @@ public final class ConfigManager {
                 files = "（无）";
             }
             String persona = readPersonaPrompt();
-            return template
+            String prompt = template
                     .replace("{KNOWLEDGE_FILE_LIST}", files)
                     .replace("{PERSONA_PROMPT}", persona);
+            if (appendMemoryGuide) {
+                prompt = prompt + MemoryStore.promptSection();
+            }
+            return prompt;
         } catch (IOException e) {
             throw new RuntimeException("读取提示词文件失败: " + fileName, e);
         }
@@ -291,8 +316,9 @@ public final class ConfigManager {
                 current.api_key,
                 current.model,
                 current.api_type,
-                readPrompt(current.system_prompt_file),
+                readPrompt(current.system_prompt_file, current.memory_enabled),
                 current.enable_tools,
+                current.memory_enabled,
                 current.use_json_mode,
                 current.enable_thinking,
                 current.send_thinking_field,
@@ -318,6 +344,7 @@ public final class ConfigManager {
                 or(settings.api_type, current.api_type),
                 readPrompt(or(settings.system_prompt_file, DEFAULT_JUDGE_PROMPT_FILE)),
                 false,
+                false,
                 true,
                 false,
                 disableThinking,
@@ -336,8 +363,9 @@ public final class ConfigManager {
                 or(settings.api_key, current.api_key),
                 or(settings.model, current.model),
                 or(settings.api_type, current.api_type),
-                readPrompt(or(settings.system_prompt_file, DEFAULT_REPLY_PROMPT_FILE)),
+                readPrompt(or(settings.system_prompt_file, DEFAULT_REPLY_PROMPT_FILE), current.memory_enabled),
                 current.enable_tools,
+                current.memory_enabled,
                 current.use_json_mode,
                 current.enable_thinking,
                 current.send_thinking_field,

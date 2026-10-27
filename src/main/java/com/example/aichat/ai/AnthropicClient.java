@@ -4,9 +4,11 @@ import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
-import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.text.ConsoleSafe;
+import com.example.aichat.tool.Tool;
+import com.example.aichat.tool.ToolRun;
+import com.example.aichat.tool.Tools;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -35,6 +37,7 @@ public final class AnthropicClient {
             .build();
     private static final String ANTHROPIC_VERSION = "2023-06-01";
     private static final int DEFAULT_MAX_TOKENS = 4096;
+    private static final int MAX_TOOL_ROUNDS = 4;
 
     private AnthropicClient() {
     }
@@ -47,54 +50,63 @@ public final class AnthropicClient {
         }
         addMessage(messages, "user", userText(profile, userMessage));
 
-        JsonObject body = baseBody(profile);
+        List<Tool> tools = Tools.active(profile.toolsEnabled(), profile.memoryEnabled());
+        return toolRound(profile, messages, 1, TokenUsage.ZERO, tools, new ToolRun());
+    }
+
+    /**
+     * 工具调用可能不止一轮（读知识库 → 查记忆 → 再回答）。每轮把 assistant 的 content 原样回传，
+     * 再把所有 tool_use 的结果作为一条 user 消息回灌；超过轮数上限后发一次不带工具的请求收尾。
+     */
+    private static CompletableFuture<RawResult> toolRound(
+            ApiProfile profile, JsonArray messages, int round, TokenUsage used,
+            List<Tool> tools, ToolRun run) {
+        boolean lastChance = round > MAX_TOOL_ROUNDS;
+        JsonObject body = baseBody(profile, lastChance ? List.of() : tools);
+        if (lastChance && !tools.isEmpty()) {
+            AiChatMod.LOGGER.info("工具调用已达 {} 轮，最后一次请求不再提供工具，要求模型直接给出结论", MAX_TOOL_ROUNDS);
+        }
         body.add("messages", messages);
 
-        return send(profile, body).thenCompose(first -> {
-            TokenUsage firstUsage = parseUsage(first);
-            JsonObject toolUse = findToolUse(first);
-            if (toolUse == null) {
-                return CompletableFuture.completedFuture(
-                        new RawResult(extractText(first), firstUsage));
+        return send(profile, body).thenCompose(response -> {
+            TokenUsage usage = used.plus(parseUsage(response));
+            JsonArray toolUses = findToolUses(response);
+            if (toolUses.isEmpty()) {
+                return CompletableFuture.completedFuture(new RawResult(extractText(response), usage));
             }
-
-            String toolId = stringOf(toolUse, "id");
-            String fileName = parseFileName(toolUse);
-
-            String fileContent;
-            try {
-                if (fileName == null || fileName.isBlank()) {
-                    throw new IllegalArgumentException("缺少 file_name");
-                }
-                fileContent = KnowledgeReader.read(fileName);
-            } catch (Exception e) {
-                fileContent = "读取失败: " + e.getMessage();
+            if (lastChance) {
+                AiChatMod.LOGGER.warn("模型在没有工具的情况下仍返回 tool_use，本次按不回复处理");
+                return CompletableFuture.completedFuture(new RawResult(extractText(response), usage));
             }
 
             // assistant 的 content 原样回传（可能含 thinking 与 tool_use block）
             JsonObject assistant = new JsonObject();
             assistant.addProperty("role", "assistant");
-            assistant.add("content", first.get("content"));
+            assistant.add("content", response.get("content"));
             messages.add(assistant);
 
-            JsonObject toolResult = new JsonObject();
-            toolResult.addProperty("type", "tool_result");
-            toolResult.addProperty("tool_use_id", toolId);
-            toolResult.addProperty("content", fileContent);
-
             JsonArray resultBlocks = new JsonArray();
-            resultBlocks.add(toolResult);
+            for (JsonElement element : toolUses) {
+                JsonObject toolUse = element.getAsJsonObject();
+                String toolId = stringOf(toolUse, "id");
+                String toolName = stringOf(toolUse, "name");
+                JsonElement input = toolUse.get("input");
+                JsonObject arguments = input != null && input.isJsonObject()
+                        ? input.getAsJsonObject() : new JsonObject();
+
+                JsonObject toolResult = new JsonObject();
+                toolResult.addProperty("type", "tool_result");
+                toolResult.addProperty("tool_use_id", toolId);
+                toolResult.addProperty("content", Tools.invoke(tools, toolName, arguments, run));
+                resultBlocks.add(toolResult);
+            }
+
             JsonObject user = new JsonObject();
             user.addProperty("role", "user");
             user.add("content", resultBlocks);
             messages.add(user);
 
-            JsonObject secondBody = baseBody(profile);
-            secondBody.add("messages", messages);
-            return send(profile, secondBody).thenApply(resp -> new RawResult(
-                    extractText(resp),
-                    firstUsage.plus(parseUsage(resp))
-            ));
+            return toolRound(profile, messages, round + 1, usage, tools, run);
         });
     }
 
@@ -110,7 +122,7 @@ public final class AnthropicClient {
         return userMessage;
     }
 
-    private static JsonObject baseBody(ApiProfile profile) {
+    private static JsonObject baseBody(ApiProfile profile, List<Tool> tools) {
         JsonObject body = new JsonObject();
         body.addProperty("model", profile.model());
 
@@ -136,45 +148,33 @@ public final class AnthropicClient {
             }
         }
 
-        if (profile.toolsEnabled()) {
-            body.add("tools", toolDefinitions());
+        if (!tools.isEmpty()) {
+            body.add("tools", toolDefinitions(tools));
         }
         return body;
     }
 
-    private static JsonArray toolDefinitions() {
-        List<String> files = KnowledgeReader.listFiles();
-        String list = files.isEmpty() ? "（知识库为空）" : String.join("、", files);
-
-        JsonArray tools = new JsonArray();
-        JsonObject tool = new JsonObject();
-        tool.addProperty("name", "read_knowledge_file");
-        tool.addProperty("description",
-                "当需要查阅知识库文件时调用。file_name 只能取以下之一：" + list);
-
-        JsonObject schema = new JsonObject();
-        schema.addProperty("type", "object");
-
-        JsonObject properties = new JsonObject();
-        JsonObject fileName = new JsonObject();
-        fileName.addProperty("type", "string");
-        fileName.addProperty("description", "知识库文件名");
-        properties.add("file_name", fileName);
-        schema.add("properties", properties);
-
-        JsonArray required = new JsonArray();
-        required.add("file_name");
-        schema.add("required", required);
-
-        tool.add("input_schema", schema);
-        tools.add(tool);
-        return tools;
+    /**
+     * Anthropic 的工具格式：name / description / input_schema 平铺在 tool 对象上。
+     */
+    private static JsonArray toolDefinitions(List<Tool> tools) {
+        JsonArray array = new JsonArray();
+        for (Tool tool : tools) {
+            JsonObject definition = new JsonObject();
+            definition.addProperty("name", tool.name());
+            definition.addProperty("description", tool.description());
+            definition.add("input_schema", tool.parameters());
+            array.add(definition);
+        }
+        return array;
     }
 
-    private static JsonObject findToolUse(JsonObject response) {
+    /** 一次响应里可能同时有多个 tool_use block，全部回灌。 */
+    private static JsonArray findToolUses(JsonObject response) {
+        JsonArray result = new JsonArray();
         JsonElement contentElement = response.get("content");
         if (contentElement == null || !contentElement.isJsonArray()) {
-            return null;
+            return result;
         }
         for (JsonElement element : contentElement.getAsJsonArray()) {
             if (!element.isJsonObject()) {
@@ -183,22 +183,10 @@ public final class AnthropicClient {
             JsonObject block = element.getAsJsonObject();
             JsonElement type = block.get("type");
             if (type != null && "tool_use".equals(type.getAsString())) {
-                return block;
+                result.add(block);
             }
         }
-        return null;
-    }
-
-    /**
-     * Anthropic 的 tool_use.input 已经是 JSON 对象，不需要再解析字符串。
-     */
-    private static String parseFileName(JsonObject toolUse) {
-        JsonElement inputElement = toolUse.get("input");
-        if (inputElement == null || !inputElement.isJsonObject()) {
-            return null;
-        }
-        JsonElement name = inputElement.getAsJsonObject().get("file_name");
-        return name == null || name.isJsonNull() ? null : name.getAsString();
+        return result;
     }
 
     private static String extractText(JsonObject response) {

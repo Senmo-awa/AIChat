@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.8.0 - 2026-10-27
+
+### Added
+
+- **记忆功能**：AI 可以在 `memory/` 目录里新建、追加、覆写纯文本笔记，跨对话保存。典型场景是玩家托付「某人上线时提醒某事」——这类约定以前只活在最近若干条上下文里，消息一多就忘了，现在可以写进记忆文件长期保留。
+- 新增工具 `memory_read`（不填 `file_name` 时返回文件清单）与 `memory_write`（`mode=append` / `overwrite`）。
+- 单个记忆文件有字节上限（`memory_max_file_kb`，默认 8 KB）。写入超限时**不静默截断、也不写坏半截文件**，而是回一段指引，让模型自己读出全文、压缩成要点再覆写；用到上限 80% 时会提前提示。
+- `config.json` 升到 v5，新增 `memory_enabled`（默认 `false`，显式开启）、`memory_dir`、`memory_max_file_kb`。旧配置自动合并升级并备份为 `.v4.bak`。
+
+### Changed
+
+- **工具层重构**：新增 `tool` 包（`Tool` 接口 + `Tools` 注册表 + `ToolRun` 单次会话状态），把原先硬编码在 `OpenAiClient` / `AnthropicClient` 里的知识库读取与联网搜索搬进独立实现类。协议层只负责把工具 schema 翻译成各家格式（OpenAI 的 `function.parameters`、Anthropic 的 `input_schema`）并回灌结果；新增能力只需加一个 `Tool` 实现，两家客户端都不用改。
+- Anthropic 通道补齐多轮工具循环与 `web_search` 支持（此前只支持读一次知识库，不支持搜索、也不支持多轮）。
+- 记忆规则由模组在读取提示词时追加到末尾，**不需要修改自己的 `system_prompt.txt`**；judge 提示词不会追加（它不发送工具）。
+- `memory_enabled: true` 会顺带打开工具通道：即使 `enable_tools` 仍是 `false`，也会发送记忆工具定义。该状态下 `use_json_mode` 不生效（带工具时部分平台不返回 `tool_calls`，与 1.7.0 的既有取舍一致）。
+
+### Behavior
+
+- 记忆目录默认 `config/aichat/memory/`，配置加载时自动创建。
+- 文件名白名单：纯文件名（不带目录、不能含 `..`）、只允许字母数字/中文/`_`/`-`/`.`/空格、扩展名限定 `.md` / `.txt`（缺省补 `.md`），长度上限 64 字符；路径越界直接拒绝。写了别的扩展名（`.exe` 之类）直接报错，不会静默改名。
+- 记忆文件数量软上限 32 个：达上限后拒绝新建，只能覆写或合并进已有文件，防止被反复刷文件撑爆目录。
+- 每次写入记录一条 INFO 日志（文件名 + 体积 + 上限）；`/aichat memory` 查看当前清单。
+- 大小上限只在写入端生效：手工放进 `memory/` 的更大文件不会被模组改写或删除，只是清单里会显示真实体积。
+
 ## 1.7.0 - 2026-10-26
 
 ### Added
