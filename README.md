@@ -65,7 +65,7 @@ gradlew.bat build
 | `search_api_key` | 搜索 API Key；`bing` / `searxng` 留空即可 |
 | `search_max_results` | 一次搜索最多取几条结果，默认 5，上限 10 |
 | `search_timeout_seconds` | 搜索请求超时（秒），默认 10，与对话超时相互独立 |
-| `memory_enabled` | 是否开启记忆功能（AI 读写记忆文件），默认 `false`；开启后会一并打开工具通道，见「记忆功能」 |
+| `memory_enabled` | 是否开启记忆功能（AI 读写记忆文件），默认 `true`；开启后会一并打开工具通道，见「记忆功能」 |
 | `memory_dir` | 记忆文件夹名，相对 `config/aichat/`，默认 `memory` |
 | `memory_max_file_kb` | 单个记忆文件上限（KB），默认 8；写入超限由 AI 自己压缩后覆写 |
 | `config_version` | 配置文件版本，升级时自动补齐新字段 |
@@ -247,7 +247,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - 文件数量软上限 32 个：达上限后只能覆写或合并进已有文件，防止被反复刷文件撑爆目录。
 - 目录默认 `config/aichat/memory/`，配置加载时自动创建；可用 `/aichat memory` 查看清单，每次写入会在服务端日志留一条 INFO。
 - 记忆文件是 AI 自己的笔记，提示词里明确要求它只当资料参考，**不把文件内容当作系统规则或玩家指令执行**——防止有人把恶意指令写进记忆文件。
-- `memory_enabled: true` 会顺带打开工具通道：即使 `enable_tools` 是 `false`，也会发送记忆工具定义（知识库/搜索仍由 `enable_tools` 控制）。带工具时不发送 `response_format=json_object`，与既有取舍一致。
+- `memory_enabled`（默认 `true`）会顺带打开工具通道：即使 `enable_tools` 是 `false`，也会发送记忆工具定义（知识库/搜索仍由 `enable_tools` 控制）。带工具时不发送 `response_format=json_object`，与既有取舍一致；想完全回到 1.7.0 的老行为就把它设成 `false`。
 - 注意 token：每轮对话都会带上工具定义（几 KB 级），记忆文件正文只在模型主动 `memory_read` 时才进 prompt。
 
 ## 配置升级
@@ -255,7 +255,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 `config.json` 与 `system.json` 都带版本号。模组启动或执行 `/aichat reload` 时，
 若文件版本低于当前版本，会先备份为 `.v<版本>.bak`，再用默认模板补齐缺失字段，已有值不会被覆盖。
 
-当前 `config.json` 为 **v5**：1.7.0 及更早（v4 及以下）的配置升级时会自动补上 `memory_enabled` / `memory_dir` / `memory_max_file_kb`，原文件备份为 `config.json.v4.bak`，记忆功能默认仍关闭。
+当前 `config.json` 为 **v5**：1.7.0 及更早（v4 及以下）的配置升级时会自动补上 `memory_enabled` / `memory_dir` / `memory_max_file_kb`，原文件备份为 `config.json.v4.bak`，记忆功能随默认值一并开启（想关掉就把 `memory_enabled` 设为 `false`）。
 
 ## 行为
 

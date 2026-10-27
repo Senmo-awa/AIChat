@@ -75,9 +75,9 @@ public class ModConfig {
     /**
      * 是否开启记忆功能：AI 可以在记忆文件夹里读写纯文本笔记，跨对话保存。
      * 开启时会顺带打开工具通道——即使 enable_tools 为 false，也会发送记忆工具定义。
-     * 默认关闭：开启要付出一份工具定义的 token，且部分中转站在带工具时不返回 tool_calls。
+     * 默认开启，开箱即用；不想用（或要严格保持 1.7.0 的老行为）时设为 false。
      */
-    public boolean memory_enabled = false;
+    public boolean memory_enabled = true;
     /** 记忆文件夹名（相对于 config/aichat/）。不填按 memory 处理。 */
     public String memory_dir = "memory";
     /** 单个记忆文件的字节上限（KB）。写入超过该值时被拒绝，由 AI 自己压缩后覆写。 */

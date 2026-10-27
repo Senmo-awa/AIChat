@@ -7,14 +7,14 @@
 - **记忆功能**：AI 可以在 `memory/` 目录里新建、追加、覆写纯文本笔记，跨对话保存。典型场景是玩家托付「某人上线时提醒某事」——这类约定以前只活在最近若干条上下文里，消息一多就忘了，现在可以写进记忆文件长期保留。
 - 新增工具 `memory_read`（不填 `file_name` 时返回文件清单）与 `memory_write`（`mode=append` / `overwrite`）。
 - 单个记忆文件有字节上限（`memory_max_file_kb`，默认 8 KB）。写入超限时**不静默截断、也不写坏半截文件**，而是回一段指引，让模型自己读出全文、压缩成要点再覆写；用到上限 80% 时会提前提示。
-- `config.json` 升到 v5，新增 `memory_enabled`（默认 `false`，显式开启）、`memory_dir`、`memory_max_file_kb`。旧配置自动合并升级并备份为 `.v4.bak`。
+- `config.json` 升到 v5，新增 `memory_enabled`（默认 `true`，开箱即用）、`memory_dir`、`memory_max_file_kb`。旧配置自动合并升级并备份为 `.v4.bak`。
 
 ### Changed
 
 - **工具层重构**：新增 `tool` 包（`Tool` 接口 + `Tools` 注册表 + `ToolRun` 单次会话状态），把原先硬编码在 `OpenAiClient` / `AnthropicClient` 里的知识库读取与联网搜索搬进独立实现类。协议层只负责把工具 schema 翻译成各家格式（OpenAI 的 `function.parameters`、Anthropic 的 `input_schema`）并回灌结果；新增能力只需加一个 `Tool` 实现，两家客户端都不用改。
 - Anthropic 通道补齐多轮工具循环与 `web_search` 支持（此前只支持读一次知识库，不支持搜索、也不支持多轮）。
 - 记忆规则由模组在读取提示词时追加到末尾，**不需要修改自己的 `system_prompt.txt`**；judge 提示词不会追加（它不发送工具）。
-- `memory_enabled: true` 会顺带打开工具通道：即使 `enable_tools` 仍是 `false`，也会发送记忆工具定义。该状态下 `use_json_mode` 不生效（带工具时部分平台不返回 `tool_calls`，与 1.7.0 的既有取舍一致）。
+- `memory_enabled: true`（默认）会顺带打开工具通道：即使 `enable_tools` 仍是 `false`，也会发送记忆工具定义。该状态下 `use_json_mode` 不生效（带工具时部分平台不返回 `tool_calls`，与 1.7.0 的既有取舍一致）。想完全保持 1.7.0 老行为（不发工具、保留 `response_format`）时把 `memory_enabled` 设为 `false`。
 
 ### Behavior
 
