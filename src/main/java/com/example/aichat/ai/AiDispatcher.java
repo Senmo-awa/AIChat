@@ -71,28 +71,45 @@ public final class AiDispatcher {
         // 特权请求（管理员用前缀发起的服务器管理请求）不进缓冲区：
         // 缓冲会把同一时间别人的话一起拼进来，那份授权就说不清是谁给的了。
         if (ctx.serverTools()) {
-            AiChatMod.LOGGER.info("服务器管理工具请求：{}（跳过消息缓冲）", ctx.playerName());
+            AiChatMod.LOGGER.info("服务器管理工具请求：{}（特权请求跳过缓冲，立即发送）", ctx.playerName());
             process(List.of(ctx));
             return;
         }
 
         if (!ConfigManager.get().buffer_enabled) {
+            if (StateManager.isDebug()) {
+                AiChatMod.LOGGER.info("[debug] 消息缓冲已关闭（buffer_enabled=false），立即发送");
+            }
             process(List.of(ctx));
             return;
         }
 
         List<ChatContext> batch = null;
+        int pending;
+        int pendingChars;
         synchronized (BUFFER_LOCK) {
             BUFFER.addLast(ctx);
             bufferedChars += ctx.content() == null ? 0 : ctx.content().length();
             if (exceedsLimit()) {
                 batch = takeBufferLocked();
+                pending = 0;
+                pendingChars = 0;
             } else {
                 scheduleFlushLocked();
+                pending = BUFFER.size();
+                pendingChars = bufferedChars;
             }
         }
         if (batch != null) {
+            AiChatMod.LOGGER.info("缓冲达到上限（{} 条 / {} 字符），立即发送 {} 条消息",
+                    ConfigManager.get().buffer_max_messages, ConfigManager.get().buffer_max_chars,
+                    batch.size());
             process(batch);
+            return;
+        }
+        if (StateManager.isDebug()) {
+            AiChatMod.LOGGER.info("[debug] 消息进入缓冲：已攒 {} 条 / {} 字符，{} 秒后发送",
+                    pending, pendingChars, Math.max(1, ConfigManager.get().buffer_delay_seconds));
         }
     }
 
@@ -117,6 +134,11 @@ public final class AiDispatcher {
                 return;
             }
             batch = takeBufferLocked();
+        }
+        // 合并了多条才值得记一行（单条的请求本来就有 token 用量那行）；这样「到底有没有合并」一眼可见
+        if (batch.size() > 1) {
+            AiChatMod.LOGGER.info("缓冲到期：合并 {} 条消息后发送（等待 {} 秒）",
+                    batch.size(), Math.max(1, ConfigManager.get().buffer_delay_seconds));
         }
         process(batch);
     }
