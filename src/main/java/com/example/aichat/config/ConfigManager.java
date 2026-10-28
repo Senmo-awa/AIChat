@@ -171,6 +171,13 @@ public final class ConfigManager {
         if (target.server_tools_list_max_entries < 1) {
             target.server_tools_list_max_entries = 200;
         }
+        if (target.server_tools_broadcast == null || target.server_tools_broadcast.isBlank()) {
+            target.server_tools_broadcast = "show";
+        }
+        target.server_tools_broadcast = target.server_tools_broadcast.trim().toLowerCase();
+        if (target.server_tools_broadcast_flag == null || target.server_tools_broadcast_flag.isBlank()) {
+            target.server_tools_broadcast_flag = "-f";
+        }
         if (target.server_tools_deny_paths == null) {
             target.server_tools_deny_paths = new String[0];
         }

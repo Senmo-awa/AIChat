@@ -246,6 +246,7 @@ public final class AiChatCommand {
                     .append("\"（玩家在聊天框里以它开头才会调用工具）");
         }
         text.append("\n权限方式：").append(ServerToolAccess.describePermission());
+        text.append("\n消息广播：").append(ServerToolAccess.describeBroadcast());
         text.append("\n管理员名单（list 模式生效，共 ").append(admins.size()).append(" 人）：");
         if (admins.isEmpty()) {
             text.append("（空）");

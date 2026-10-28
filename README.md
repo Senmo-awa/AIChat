@@ -8,6 +8,7 @@ Minecraft 服务端聊天模组，支持 OpenAI 兼容与 Anthropic Messages 两
 - Fabric Loader 0.19.4+
 - Fabric API 0.155.3+26.1.2
 - Java 25
+- （可选）LuckPerms：只有 `server_tools_permission_mode` 设为 `luckperms` 或 `/aichat tools` 的权限判定用得上，没装不影响其他功能
 
 ## 构建
 
@@ -85,6 +86,8 @@ gradlew.bat build
 | `server_tools_write_max_kb` | 单次写入上限（KB），默认 64 |
 | `server_tools_list_max_entries` | 列目录最多返回多少项，默认 200 |
 | `server_tools_trash_enabled` | 删除时是否移入 `.aichat-trash/<时间戳>/` 回收目录，默认 `true`（强烈建议保持） |
+| `server_tools_broadcast` | 特权消息是否广播给其他玩家：`show` 原样广播（默认）/ `hide` 不广播（只发发送者、管理员、控制台）/ `show_by_flag` 默认不广播，带标志位才广播 / `hide_by_flag` 默认广播，带标志位就不广播 |
+| `server_tools_broadcast_flag` | 上面两种 flag 模式用的消息尾缀，默认 `-f`；尾缀本身不会发给 AI |
 | `server_tools_deny_paths` | 禁止读写的路径（相对服务器根目录），默认挡住本模组自己的 `config.json` / `system.json` / `server_admins.json` 和 `.aichat-trash` |
 | `system_prompt_in_user` | 把系统提示词（格式契约 + 文件列表 + 人设）再拼进最后一条用户消息，默认 `true`。部分中转站会把 `system` 角色整条丢弃，导致模组的提示词到不了模型（表现为模型不输出 JSON、瞎猜知识库文件名）；接口确实支持 `system` 时可设为 `false` 省一份重复 token |
 
@@ -288,6 +291,9 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 
 前缀只是「授权令牌」，AI 收到的是去掉前缀之后的内容。
 
+**能不能被别的玩家看到**由 `server_tools_broadcast` 决定（默认 `show` 原样广播）：
+`hide` 完全不广播，只发给发送者、管理员和控制台；`show_by_flag` 默认不广播、消息末尾加 `-f` 才广播；`hide_by_flag` 默认广播、加 `-f` 就不广播。标志位会被剥掉，不会进 AI 的输入。
+
 ### 工具能力
 
 一个工具 `server_files` 覆盖全部操作：
@@ -311,7 +317,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 |---|---|
 | `op`（默认） | 按原版权限等级判，`server_tools_permission_level` 默认 `4`。想放开到 3 级 op 就改成 `3` |
 | `list` | 用模组自己的名单文件 `config/aichat/server_admins.json`，非 op 玩家也能被授权。可用 `/aichat tools add <玩家>` / `remove <玩家>` 维护，也可以直接改文件后 `/aichat reload` |
-| `luckperms` | 查 LuckPerms 的权限节点（`server_tools_luckperms_node`，默认 `aichat.servertools`）。走 `fabric-permissions-api`，用反射调用：没装 LuckPerms 时不会崩，只会在日志里说明一次，然后一律拒绝 |
+| `luckperms` | 查 LuckPerms 的权限节点（`server_tools_luckperms_node`，默认 `aichat.servertools`）。编译期依赖 `net.luckperms:api`（`compileOnly`，不打进 jar），运行时由服务器上的 LuckPerms 提供；没装 LuckPerms 时会捕获 `NoClassDefFoundError`，日志提示一次后一律拒绝，不会崩服 |
 
 `/aichat tools` 会直接把当前开关、前缀、权限方式、名单和「你自己能不能用」列出来，排查权限问题先看它。
 
@@ -324,6 +330,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 - **二进制**：jar / 压缩包这类文件只报大小，不返回内容。
 - **审计**：每次工具调用都会在服务端日志留一条 `[server-tools] 管理员 <玩家> 调用 op=... path=...`。
 - **规则不入提示词文件**：前缀、权限、可用操作这些说明由模组在读取提示词时自动追加（和记忆功能一样），不写进你的 `system_prompt.txt`——升级不会覆盖你改过的提示词，也不会因为你改了提示词就把权限规则改掉。
+- **广播可控**：`hide` / flag 模式下模组会取消原版广播，再手动投递给发送者、管理员和控制台，普通玩家看不到这条请求。
 - **不进消息缓冲**：特权请求跳过防抖缓冲直接处理，避免同一时间别人的聊天被拼进这条授权请求里。
 
 ### 管理员名单文件

@@ -9,12 +9,14 @@ import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
+import net.luckperms.api.LuckPerms;
+import net.luckperms.api.LuckPermsProvider;
+import net.luckperms.api.model.user.User;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.server.permissions.Permission;
 import net.minecraft.server.permissions.Permissions;
 
 import java.io.IOException;
-import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -46,11 +48,15 @@ public final class ServerToolAccess {
     private static final Object LOCK = new Object();
     private static final String DEFAULT_PREFIX = "!+";
     private static final String DEFAULT_ADMINS_FILE = "server_admins.json";
-    private static final String PERMISSIONS_API = "me.lucko.fabric.api.permissions.v0.Permissions";
+    private static final String BROADCAST_SHOW = "show";
+    private static final String BROADCAST_HIDE = "hide";
+    private static final String BROADCAST_SHOW_BY_FLAG = "show_by_flag";
+    private static final String BROADCAST_HIDE_BY_FLAG = "hide_by_flag";
+    private static final String DEFAULT_BROADCAST = BROADCAST_SHOW;
+    private static final String DEFAULT_BROADCAST_FLAG = "-f";
 
     /** 名单文件里的名字（保留玩家写的原始大小写，匹配时忽略大小写）。 */
     private static final Set<String> ADMINS = new LinkedHashSet<>();
-    private static volatile boolean luckPermsMissingLogged = false;
     private static volatile boolean luckPermsErrorLogged = false;
 
     private ServerToolAccess() {
@@ -111,6 +117,62 @@ public final class ServerToolAccess {
         return content.substring(prefix.length()).trim();
     }
 
+    /** 解析好的特权请求：给 AI 的内容 + 这条消息要不要广播。 */
+    public record PrivilegedRequest(String content, boolean broadcast) {
+    }
+
+    /**
+     * 去掉前缀、识别末尾广播标志，并按 {@code server_tools_broadcast} 决定这条消息是否广播。
+     * <p>
+     * 四种模式：show（默认，原样广播）/ hide（不广播）/ show_by_flag（默认不广播，带标志位才广播）/
+     * hide_by_flag（默认广播，带标志位就不广播）。标志位本身会被去掉，不会进 AI 的输入。
+     */
+    public static PrivilegedRequest parse(String rawContent) {
+        String body = stripPrefix(rawContent);
+        String flag = broadcastFlag();
+        boolean flagged = !flag.isEmpty() && body.endsWith(flag);
+        if (flagged) {
+            body = body.substring(0, body.length() - flag.length()).trim();
+        }
+        boolean broadcast = switch (broadcastMode()) {
+            case BROADCAST_HIDE -> false;
+            case BROADCAST_SHOW_BY_FLAG -> flagged;
+            case BROADCAST_HIDE_BY_FLAG -> !flagged;
+            default -> true;
+        };
+        return new PrivilegedRequest(body, broadcast);
+    }
+
+    public static String broadcastMode() {
+        ModConfig config = ConfigManager.get();
+        if (config == null || config.server_tools_broadcast == null) {
+            return DEFAULT_BROADCAST;
+        }
+        String mode = config.server_tools_broadcast.trim().toLowerCase(Locale.ROOT);
+        return switch (mode) {
+            case BROADCAST_HIDE, BROADCAST_SHOW_BY_FLAG, BROADCAST_HIDE_BY_FLAG -> mode;
+            default -> BROADCAST_SHOW;
+        };
+    }
+
+    public static String broadcastFlag() {
+        ModConfig config = ConfigManager.get();
+        if (config == null || config.server_tools_broadcast_flag == null) {
+            return DEFAULT_BROADCAST_FLAG;
+        }
+        return config.server_tools_broadcast_flag.trim();
+    }
+
+    /** 给 /aichat tools 显示用的一句话说明。 */
+    public static String describeBroadcast() {
+        return switch (broadcastMode()) {
+            case BROADCAST_HIDE -> "不广播（只发发送者+管理员+控制台）";
+            case BROADCAST_SHOW_BY_FLAG -> "默认不广播，末尾加 " + broadcastFlag() + " 才广播";
+            case BROADCAST_HIDE_BY_FLAG -> "默认广播，末尾加 " + broadcastFlag() + " 就不广播";
+            default -> "原样广播";
+        };
+    }
+
     // ---------------- 权限判定 ----------------
 
     /** 这名玩家能不能用服务器管理工具。 */
@@ -146,61 +208,47 @@ public final class ServerToolAccess {
     }
 
     /**
-     * luckperms 模式：通过 fabric-permissions-api 查权限节点。
-     * 用反射而不是编译期依赖，服务器没装 LuckPerms 时不会 NoClassDefFoundError，只会在调试日志里说明一次。
+     * luckperms 模式：直接查 LuckPerms 权限节点。
+     * <p>
+     * 编译期依赖 {@code net.luckperms:api}（compileOnly，不打进 jar），运行时由服务器上的
+     * LuckPerms 提供；没装 LuckPerms 时类加载会抛 {@link NoClassDefFoundError}，这里吞掉并只提示一次，
+     * 后续一律按无权限处理——不会因为权限插件缺失把服务器搞崩。
+     * <p>
+     * 用 UserManager + CachedData 而不是 PlayerAdapter：前者不依赖平台的玩家类映射，跨版本更稳。
      */
     private static boolean checkLuckPerms(ServerPlayer player) {
         ModConfig config = ConfigManager.get();
-        String node = config == null || config.server_tools_luckperms_node == null || config.server_tools_luckperms_node.isBlank()
+        String node = config == null || config.server_tools_luckperms_node == null
+                || config.server_tools_luckperms_node.isBlank()
                 ? "aichat.servertools"
                 : config.server_tools_luckperms_node.trim();
         try {
-            Class<?> api = Class.forName(PERMISSIONS_API);
-            // 2.X 版本提供多个重载（带默认值 / 带谓词），挑第一个能用玩家对象和节点名调用的
-            for (Method method : api.getMethods()) {
-                if (!"check".equals(method.getName())) {
-                    continue;
-                }
-                Class<?>[] types = method.getParameterTypes();
-                if (types.length < 2 || !types[0].isInstance(player) || types[1] != String.class) {
-                    continue;
-                }
-                Object[] args = new Object[types.length];
-                args[0] = player;
-                args[1] = node;
-                for (int i = 2; i < types.length; i++) {
-                    if (types[i] == boolean.class) {
-                        args[i] = Boolean.FALSE;
-                    } else if (types[i] == int.class) {
-                        args[i] = 4;
-                    } else {
-                        args[i] = null;
-                    }
-                }
-                Object result = method.invoke(null, args);
-                if (result instanceof Boolean allowed) {
-                    return allowed;
-                }
+            LuckPerms luckPerms = LuckPermsProvider.get();
+            User user = luckPerms.getUserManager().getUser(player.getUUID());
+            if (user == null) {
+                AiChatMod.LOGGER.debug("luckperms 模式：{} 的用户数据还没加载，本次按无权限处理", player.getName().getString());
+                return false;
             }
-            if (!luckPermsErrorLogged) {
-                luckPermsErrorLogged = true;
-                AiChatMod.LOGGER.warn("luckperms 模式：fabric-permissions-api 里没找到可用的 check 方法，按无权限处理");
-            }
+            return user.getCachedData().getPermissionData().checkPermission(node).asBoolean();
+        } catch (NoClassDefFoundError e) {
+            warnLuckPermsOnce("服务器没有 LuckPerms（找不到 LuckPerms API 类），luckperms 模式一律拒绝");
             return false;
-        } catch (ClassNotFoundException e) {
-            if (!luckPermsMissingLogged) {
-                luckPermsMissingLogged = true;
-                AiChatMod.LOGGER.warn(
-                        "luckperms 模式：服务器没有 fabric-permissions-api（LuckPerms 未安装），所有玩家都会被拒绝");
-            }
+        } catch (IllegalStateException e) {
+            warnLuckPermsOnce("LuckPerms 还没加载完成（LuckPermsProvider 未初始化），luckperms 模式一律拒绝");
             return false;
         } catch (Throwable t) {
-            if (!luckPermsErrorLogged) {
-                luckPermsErrorLogged = true;
-                AiChatMod.LOGGER.warn("luckperms 模式查询失败，按无权限处理：{}", String.valueOf(t.getMessage()));
-            }
+            warnLuckPermsOnce("luckperms 模式查询失败，按无权限处理：" + t.getClass().getSimpleName()
+                    + " " + (t.getMessage() == null ? "" : t.getMessage()));
             return false;
         }
+    }
+
+    private static void warnLuckPermsOnce(String message) {
+        if (luckPermsErrorLogged) {
+            return;
+        }
+        luckPermsErrorLogged = true;
+        AiChatMod.LOGGER.warn(message);
     }
 
     // ---------------- 管理员名单文件 ----------------

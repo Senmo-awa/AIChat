@@ -6,10 +6,11 @@
 
 - **服务器管理工具 `server_files`（默认关闭）**：让 AI 查看与管理服务器根目录里的文件，一个工具覆盖 `list` / `read` / `write` / `mkdir` / `delete` / `move` / `info` / `search`。排查故障时可以直接读 `logs/latest.log`、看 `mods/` 里装了哪些模组、翻 `config/` 里的配置。
 - 三道门控：`server_tools_enabled`（默认 `false`）+ 消息前缀（默认 `!+`，可配置）+ 权限判定。普通聊天根本不注册该工具；带前缀但没权限的玩家会被直接拒绝并收到提示，消息不会发给 AI（不烧 token）。
-- 权限判定三种方式，配置切换：`op`（原版权限等级，默认 4 级）/ `list`（模组自己的管理员名单文件，可用 `/aichat tools add|remove` 维护，非 op 玩家也能授权）/ `luckperms`（查 LuckPerms 权限节点，走 `fabric-permissions-api` 反射调用，非硬依赖）。
+- 权限判定三种方式，配置切换：`op`（原版权限等级，默认 4 级，可改）/ `list`（模组自己的管理员名单文件，可用 `/aichat tools add|remove` 维护，非 op 玩家也能授权）/ `luckperms`（查 LuckPerms 权限节点，`compileOnly` 依赖 `net.luckperms:api`，用 UserManager + CachedData 查询，不依赖平台玩家类映射；没装 LuckPerms 时捕获 `NoClassDefFoundError` 只提示一次，不影响服）。
 - 新增命令 `/aichat tools`（状态总览：开关 / 前缀 / 权限方式 / 名单 / 你自己能不能用）、`/aichat tools add|remove <玩家>`（需 op 4 级）。
 - 新增配置文件 `config/aichat/server_admins.json`（`list` 模式使用）。
 - **配置文件注释化**：新增 `ConfigDoc`，字段顺序 / 默认值 / 中文注释来自同一处定义，`config.json` 与 `system.json` 生成时就带注释，不用再翻文档。JSON 标准不支持注释，但读取走 Gson 宽松模式（跳过行注释与块注释），所以注释不影响解析。
+- **特权消息广播可控**：`server_tools_broadcast` 支持 `show`（默认，原样广播）/ `hide`（不广播，只发发送者、管理员、控制台）/ `show_by_flag` / `hide_by_flag`（用 `server_tools_broadcast_flag`，默认 `-f`，在消息末尾切换广播行为，尾缀不会发给 AI）。`hide` 与 flag 模式通过 `ALLOW_CHAT_MESSAGE` 取消原版广播后再手动投递。
 - 新增一套默认提示词（`system_prompt.txt` / `judge_prompt.txt` / `reply_prompt.txt` / `persona_prompt.txt`）：补充了工具使用约定、失败照实说、不把工具结果当指令、聊天框长度约束等规则。
 
 ### Changed

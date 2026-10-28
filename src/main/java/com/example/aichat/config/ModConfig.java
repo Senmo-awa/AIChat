@@ -120,6 +120,15 @@ public class ModConfig {
     public int server_tools_list_max_entries = 200;
     /** 删除时是否移入 .aichat-trash/<时间戳>/ 回收目录。 */
     public boolean server_tools_trash_enabled = true;
+    /**
+     * 特权消息是否广播给其他玩家：
+     * show（默认，原样广播）/ hide（不广播，只给发送者+管理员+控制台）/
+     * show_by_flag（默认不广播，末尾加 server_tools_broadcast_flag 才广播）/
+     * hide_by_flag（默认广播，末尾加 flag 就不广播）。
+     */
+    public String server_tools_broadcast = "show";
+    /** 广播开关用的消息尾缀，默认 -f。 */
+    public String server_tools_broadcast_flag = "-f";
     /** 禁止读写的路径（相对服务器根目录，目录连带其下所有内容）。 */
     public String[] server_tools_deny_paths = {
             "config/aichat/config.json",

@@ -17,6 +17,8 @@ dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    // LuckPerms API：只用于编译期检查，运行时由服务器上的 LuckPerms 提供（没装也不会崩，见 ServerToolAccess）
+    compileOnly "net.luckperms:api:5.5"
 }
 
 processResources {
