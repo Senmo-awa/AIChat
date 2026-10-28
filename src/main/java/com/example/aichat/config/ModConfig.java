@@ -31,7 +31,7 @@ package com.example.aichat.config;
  * server_tools_*: 服务器根目录文件管理工具（默认关闭，只有带前缀的特权消息才能调用）
  */
 public class ModConfig {
-    public int config_version = 6;
+    public int config_version = 7;
     public String api_url = "https://api.deepseek.com/chat/completions";
     public String api_key = "";
     public String model = "deepseek-flash";
