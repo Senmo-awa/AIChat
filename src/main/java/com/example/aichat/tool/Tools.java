@@ -74,6 +74,9 @@ public final class Tools {
             if (!tool.name().equals(name)) {
                 continue;
             }
+            if (run != null) {
+                run.countCall();
+            }
             int remaining = run == null ? Integer.MAX_VALUE : run.remainingBudget();
             if (remaining <= 0) {
                 AiChatMod.LOGGER.info("工具 {} 未执行：本次对话工具结果预算（{} KB）已用尽",

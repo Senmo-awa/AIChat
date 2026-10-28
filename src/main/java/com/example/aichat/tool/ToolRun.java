@@ -16,6 +16,7 @@ import com.example.aichat.config.ModConfig;
 public final class ToolRun {
     private volatile int searches;
     private volatile int resultCharsUsed;
+    private volatile int calls;
     private final String actorName;
     private final boolean serverToolsAllowed;
 
@@ -44,6 +45,15 @@ public final class ToolRun {
 
     public void countSearch() {
         searches++;
+    }
+
+    /** 本次对话模型真正发起过的工具调用次数（含因预算被拒的尝试）。 */
+    public int calls() {
+        return calls;
+    }
+
+    public void countCall() {
+        calls++;
     }
 
     /** 本次对话剩余的工具结果预算（字符）；{@link Integer#MAX_VALUE} 表示不限。 */

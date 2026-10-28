@@ -25,13 +25,16 @@ public final class AiClient {
     }
 
     public static CompletableFuture<AiResult> ask(ChatContext ctx, List<ConversationTurn> history) {
-        String userMessage = ctx.toUserMessage();
+        String userMessage = ctx.userMessageForAi();
         // 特权标记随 ToolRun 传进工具层：只有这条请求真的有权限，server_files 才会被注册
         ToolRun run = new ToolRun(ctx.playerName(), ctx.serverTools());
 
         if (!ConfigManager.isDualModelEnabled()) {
             return dispatch(ConfigManager.singleProfile(), userMessage, history, run)
-                    .thenApply(raw -> parseReply(raw.text(), raw.usage()));
+                    .thenApply(raw -> {
+                        warnIfPrivilegedWithoutTools(ctx, run);
+                        return parseReply(raw.text(), raw.usage());
+                    });
         }
 
         // 判断模型也要带历史：提示词里的"结合上下文""玩家在和别人聊天"等规则依赖上下文，
@@ -52,6 +55,7 @@ public final class AiClient {
 
             ApiProfile replyProfile = ConfigManager.replyProfile();
             return dispatch(replyProfile, userMessage, history, run).thenApply(replyRaw -> {
+                warnIfPrivilegedWithoutTools(ctx, run);
                 AiResult reply = parseReplyContent(replyRaw.text(), replyRaw.usage());
                 return new AiResult(
                         reply.reply(),
@@ -60,6 +64,23 @@ public final class AiClient {
                 );
             });
         });
+    }
+
+    /**
+     * 特权请求一次工具都没调，通常说明模型没注意到 server_files（实测小模型会答“我没权限”）。
+     * 这不是致命错误，但主人排查时最需要这条线索，所以在日志里点名。
+     */
+    private static void warnIfPrivilegedWithoutTools(ChatContext ctx, ToolRun run) {
+        if (!ctx.serverTools()) {
+            return;
+        }
+        if (run.calls() == 0) {
+            AiChatMod.LOGGER.warn("特权请求没有调用任何工具：{}（模型可能没注意到 server_files，"
+                    + "若反复出现请检查 system_prompt.txt 的工具规则是否已更新）", ctx.playerName());
+        } else if (StateManager.isDebug()) {
+            AiChatMod.LOGGER.info("[debug] 特权请求共调用工具 {} 次，回灌 {} 字符",
+                    run.calls(), run.resultCharsUsed());
+        }
     }
 
     private static CompletableFuture<RawResult> dispatch(
