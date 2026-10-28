@@ -4,9 +4,11 @@ import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
-import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.text.ConsoleSafe;
+import com.example.aichat.tool.Tool;
+import com.example.aichat.tool.ToolRun;
+import com.example.aichat.tool.Tools;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.Gson;
 import com.google.gson.JsonArray;
@@ -14,6 +16,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -22,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Anthropic Messages API（POST /v1/messages，x-api-key 认证）。
@@ -35,66 +39,94 @@ public final class AnthropicClient {
             .build();
     private static final String ANTHROPIC_VERSION = "2023-06-01";
     private static final int DEFAULT_MAX_TOKENS = 4096;
+    private static final int MAX_TOOL_ROUNDS = 4;
+    /** 网络瞬时失败的重试次数与间隔。 */
+    private static final int MAX_NETWORK_ATTEMPTS = 2;
+    private static final int NETWORK_RETRY_DELAY_SECONDS = 2;
 
     private AnthropicClient() {
     }
 
     public static CompletableFuture<RawResult> ask(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
         JsonArray messages = new JsonArray();
         for (ConversationTurn turn : history) {
             addMessage(messages, turn.role(), turn.content());
         }
         addMessage(messages, "user", userText(profile, userMessage));
 
-        JsonObject body = baseBody(profile);
+        List<Tool> tools = Tools.active(
+                profile.toolsEnabled(), profile.memoryEnabled(), run != null && run.serverToolsAllowed());
+        return toolRound(profile, messages, 1, TokenUsage.ZERO,
+                tools, run == null ? new ToolRun() : run, false);
+    }
+
+    /**
+     * 工具调用可能不止一轮（读知识库 → 查记忆 → 再回答）。每轮把 assistant 的 content 原样回传，
+     * 再把所有 tool_use 的结果作为一条 user 消息回灌。
+     * <p>
+     * 轮次用尽后不立刻抽掉 tools：实测抽掉之后模型会把工具调用写成正文里的私有标记，
+     * 模组解析不了只能丢弃，玩家端就是「AI 不说话」。所以先保留工具声明、明确要求收尾，
+     * 仍不听话才真正回收工具。
+     */
+    private static CompletableFuture<RawResult> toolRound(
+            ApiProfile profile, JsonArray messages, int round, TokenUsage used,
+            List<Tool> tools, ToolRun run, boolean usedTools) {
+        boolean exhausted = round > MAX_TOOL_ROUNDS;
+        boolean stripTools = round > MAX_TOOL_ROUNDS + 1;
+        if (exhausted) {
+            addMessage(messages, "user", stripTools
+                    ? "【系统】工具已经全部回收，本轮只能直接输出最终 JSON，不要再调用工具，也不要输出任何工具调用标记。"
+                    : "【系统】工具调用次数已达上限，本轮不要再调用工具，请直接用 JSON 给出最终结论。");
+            AiChatMod.LOGGER.info("工具调用已达 {} 轮，{}", MAX_TOOL_ROUNDS,
+                    stripTools ? "本轮回收工具，要求直接给出结论" : "本轮保留工具但要求收尾");
+        }
+
+        JsonObject body = baseBody(profile, stripTools ? List.of() : tools);
         body.add("messages", messages);
 
-        return send(profile, body).thenCompose(first -> {
-            TokenUsage firstUsage = parseUsage(first);
-            JsonObject toolUse = findToolUse(first);
-            if (toolUse == null) {
-                return CompletableFuture.completedFuture(
-                        new RawResult(extractText(first), firstUsage));
+        return sendWithRetry(profile, body).thenCompose(response -> {
+            TokenUsage usage = used.plus(parseUsage(response));
+            JsonArray toolUses = findToolUses(response);
+            if (toolUses.isEmpty()) {
+                return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
             }
-
-            String toolId = stringOf(toolUse, "id");
-            String fileName = parseFileName(toolUse);
-
-            String fileContent;
-            try {
-                if (fileName == null || fileName.isBlank()) {
-                    throw new IllegalArgumentException("缺少 file_name");
-                }
-                fileContent = KnowledgeReader.read(fileName);
-            } catch (Exception e) {
-                fileContent = "读取失败: " + e.getMessage();
+            if (stripTools) {
+                AiChatMod.LOGGER.warn("模型在没有工具的情况下仍返回 tool_use，本次按不回复处理");
+                return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
+            }
+            if (exhausted) {
+                return toolRound(profile, messages, round + 1, usage, tools, run, usedTools);
             }
 
             // assistant 的 content 原样回传（可能含 thinking 与 tool_use block）
             JsonObject assistant = new JsonObject();
             assistant.addProperty("role", "assistant");
-            assistant.add("content", first.get("content"));
+            assistant.add("content", response.get("content"));
             messages.add(assistant);
 
-            JsonObject toolResult = new JsonObject();
-            toolResult.addProperty("type", "tool_result");
-            toolResult.addProperty("tool_use_id", toolId);
-            toolResult.addProperty("content", fileContent);
-
             JsonArray resultBlocks = new JsonArray();
-            resultBlocks.add(toolResult);
+            for (JsonElement element : toolUses) {
+                JsonObject toolUse = element.getAsJsonObject();
+                String toolId = stringOf(toolUse, "id");
+                String toolName = stringOf(toolUse, "name");
+                JsonElement input = toolUse.get("input");
+                JsonObject arguments = input != null && input.isJsonObject()
+                        ? input.getAsJsonObject() : new JsonObject();
+
+                JsonObject toolResult = new JsonObject();
+                toolResult.addProperty("type", "tool_result");
+                toolResult.addProperty("tool_use_id", toolId);
+                toolResult.addProperty("content", Tools.invoke(tools, toolName, arguments, run));
+                resultBlocks.add(toolResult);
+            }
+
             JsonObject user = new JsonObject();
             user.addProperty("role", "user");
             user.add("content", resultBlocks);
             messages.add(user);
 
-            JsonObject secondBody = baseBody(profile);
-            secondBody.add("messages", messages);
-            return send(profile, secondBody).thenApply(resp -> new RawResult(
-                    extractText(resp),
-                    firstUsage.plus(parseUsage(resp))
-            ));
+            return toolRound(profile, messages, round + 1, usage, tools, run, true);
         });
     }
 
@@ -110,7 +142,83 @@ public final class AnthropicClient {
         return userMessage;
     }
 
-    private static JsonObject baseBody(ApiProfile profile) {
+    /**
+     * 收尾：把模型最后一条消息转成最终结果。
+     * 用过工具却没拿到可用 JSON（空内容 / 私有工具标记）时用兜底话术，避免玩家端完全没反馈。
+     */
+    private static RawResult finalResult(JsonObject response, TokenUsage usage, boolean usedTools) {
+        String content = extractText(response);
+        boolean empty = content == null || content.isBlank();
+        boolean markup = Fallbacks.looksLikeToolMarkup(content);
+        if (usedTools && (empty || markup)) {
+            String fallback = Fallbacks.replyJsonOrNull();
+            if (fallback != null) {
+                AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），本轮改用兜底话术回复",
+                        empty ? "content 为空" : "输出了工具调用标记");
+                return new RawResult(fallback, usage);
+            }
+            AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），且未配置 fallback_reply，本次按不回复处理",
+                    empty ? "content 为空" : "输出了工具调用标记");
+        }
+        return new RawResult(content, usage);
+    }
+
+    /**
+     * 网络瞬时失败（连接超时、握手被掐断、5xx、429）重试一次：
+     * 实测中转站偶发这些错误，直接丢弃整条消息体验很差。
+     */
+    private static CompletableFuture<JsonObject> sendWithRetry(ApiProfile profile, JsonObject body) {
+        return trySend(profile, body, 1);
+    }
+
+    private static CompletableFuture<JsonObject> trySend(ApiProfile profile, JsonObject body, int attempt) {
+        return send(profile, body).handle((result, error) -> {
+            if (error == null) {
+                return CompletableFuture.completedFuture(result);
+            }
+            Throwable cause = unwrap(error);
+            if (attempt >= MAX_NETWORK_ATTEMPTS || !isTransient(cause)) {
+                return CompletableFuture.<JsonObject>failedFuture(cause);
+            }
+            AiChatMod.LOGGER.warn("请求失败（第 {} 次）：{}，{} 秒后重试一次",
+                    attempt, ConsoleSafe.escape(String.valueOf(cause.getMessage())), NETWORK_RETRY_DELAY_SECONDS);
+            return delayedRetry(profile, body, attempt + 1);
+        }).thenCompose(future -> future);
+    }
+
+    private static CompletableFuture<JsonObject> delayedRetry(ApiProfile profile, JsonObject body, int attempt) {
+        return CompletableFuture.supplyAsync(() -> "",
+                        CompletableFuture.delayedExecutor(NETWORK_RETRY_DELAY_SECONDS, TimeUnit.SECONDS))
+                .thenCompose(ignored -> trySend(profile, body, attempt));
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        Throwable current = error;
+        for (int depth = 0; depth < 5 && current.getCause() != null && current.getCause() != current; depth++) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    /** 只重试「重发可能成功」的错误：IO/超时/握手 与 429、5xx；4xx 参数错误重试没意义。 */
+    private static boolean isTransient(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof IOException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null
+                    && (message.contains("API 返回 429") || message.contains("API 返回 5"))) {
+                return true;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return false;
+    }
+
+    private static JsonObject baseBody(ApiProfile profile, List<Tool> tools) {
         JsonObject body = new JsonObject();
         body.addProperty("model", profile.model());
 
@@ -136,45 +244,33 @@ public final class AnthropicClient {
             }
         }
 
-        if (profile.toolsEnabled()) {
-            body.add("tools", toolDefinitions());
+        if (!tools.isEmpty()) {
+            body.add("tools", toolDefinitions(tools));
         }
         return body;
     }
 
-    private static JsonArray toolDefinitions() {
-        List<String> files = KnowledgeReader.listFiles();
-        String list = files.isEmpty() ? "（知识库为空）" : String.join("、", files);
-
-        JsonArray tools = new JsonArray();
-        JsonObject tool = new JsonObject();
-        tool.addProperty("name", "read_knowledge_file");
-        tool.addProperty("description",
-                "当需要查阅知识库文件时调用。file_name 只能取以下之一：" + list);
-
-        JsonObject schema = new JsonObject();
-        schema.addProperty("type", "object");
-
-        JsonObject properties = new JsonObject();
-        JsonObject fileName = new JsonObject();
-        fileName.addProperty("type", "string");
-        fileName.addProperty("description", "知识库文件名");
-        properties.add("file_name", fileName);
-        schema.add("properties", properties);
-
-        JsonArray required = new JsonArray();
-        required.add("file_name");
-        schema.add("required", required);
-
-        tool.add("input_schema", schema);
-        tools.add(tool);
-        return tools;
+    /**
+     * Anthropic 的工具格式：name / description / input_schema 平铺在 tool 对象上。
+     */
+    private static JsonArray toolDefinitions(List<Tool> tools) {
+        JsonArray array = new JsonArray();
+        for (Tool tool : tools) {
+            JsonObject definition = new JsonObject();
+            definition.addProperty("name", tool.name());
+            definition.addProperty("description", tool.description());
+            definition.add("input_schema", tool.parameters());
+            array.add(definition);
+        }
+        return array;
     }
 
-    private static JsonObject findToolUse(JsonObject response) {
+    /** 一次响应里可能同时有多个 tool_use block，全部回灌。 */
+    private static JsonArray findToolUses(JsonObject response) {
+        JsonArray result = new JsonArray();
         JsonElement contentElement = response.get("content");
         if (contentElement == null || !contentElement.isJsonArray()) {
-            return null;
+            return result;
         }
         for (JsonElement element : contentElement.getAsJsonArray()) {
             if (!element.isJsonObject()) {
@@ -183,22 +279,10 @@ public final class AnthropicClient {
             JsonObject block = element.getAsJsonObject();
             JsonElement type = block.get("type");
             if (type != null && "tool_use".equals(type.getAsString())) {
-                return block;
+                result.add(block);
             }
         }
-        return null;
-    }
-
-    /**
-     * Anthropic 的 tool_use.input 已经是 JSON 对象，不需要再解析字符串。
-     */
-    private static String parseFileName(JsonObject toolUse) {
-        JsonElement inputElement = toolUse.get("input");
-        if (inputElement == null || !inputElement.isJsonObject()) {
-            return null;
-        }
-        JsonElement name = inputElement.getAsJsonObject().get("file_name");
-        return name == null || name.isJsonNull() ? null : name.getAsString();
+        return result;
     }
 
     private static String extractText(JsonObject response) {
@@ -254,7 +338,8 @@ public final class AnthropicClient {
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
                 .build();
 
-        return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+        // 登记底层 future：停服时由 InFlight 取消，等于掐掉正在生成的推理
+        return InFlight.track(HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)))
                 .thenApply(response -> {
                     if (StateManager.isDebug()) {
                         AiChatMod.LOGGER.info("[debug] Anthropic 响应 HTTP {}：{}",

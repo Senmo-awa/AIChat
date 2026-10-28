@@ -6,6 +6,7 @@ import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.text.ConsoleSafe;
+import com.example.aichat.tool.ToolRun;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -24,17 +25,24 @@ public final class AiClient {
     }
 
     public static CompletableFuture<AiResult> ask(ChatContext ctx, List<ConversationTurn> history) {
-        String userMessage = ctx.toUserMessage();
+        String userMessage = ctx.userMessageForAi();
+        // 特权标记随 ToolRun 传进工具层：只有这条请求真的有权限，server_files 才会被注册
+        ToolRun run = new ToolRun(ctx.playerName(), ctx.serverTools());
 
         if (!ConfigManager.isDualModelEnabled()) {
-            return dispatch(ConfigManager.singleProfile(), userMessage, history)
-                    .thenApply(raw -> parseReply(raw.text(), raw.usage()));
+            return dispatch(ConfigManager.singleProfile(), userMessage, history, run)
+                    .thenApply(raw -> {
+                        warnIfPrivilegedWithoutTools(ctx, run);
+                        return parseReply(raw.text(), raw.usage());
+                    });
         }
 
         // 判断模型也要带历史：提示词里的"结合上下文""玩家在和别人聊天"等规则依赖上下文，
         // 只给当前事件会让 judge 变成盲判，和单模型模式的表现不一致。
         ApiProfile judgeProfile = ConfigManager.judgeProfile();
-        return dispatch(judgeProfile, userMessage, history).thenCompose(judgeRaw -> {
+        // 判断模型永远不给工具：它只输出一行 JSON，给它工具只会浪费 token
+        return dispatch(judgeProfile, userMessage, history, new ToolRun(ctx.playerName(), false))
+                .thenCompose(judgeRaw -> {
             TokenUsage judgeUsage = judgeRaw.usage();
             boolean shouldReply = judgeSaysReply(judgeRaw.text());
             if (StateManager.isDebug()) {
@@ -46,7 +54,8 @@ public final class AiClient {
             }
 
             ApiProfile replyProfile = ConfigManager.replyProfile();
-            return dispatch(replyProfile, userMessage, history).thenApply(replyRaw -> {
+            return dispatch(replyProfile, userMessage, history, run).thenApply(replyRaw -> {
+                warnIfPrivilegedWithoutTools(ctx, run);
                 AiResult reply = parseReplyContent(replyRaw.text(), replyRaw.usage());
                 return new AiResult(
                         reply.reply(),
@@ -57,12 +66,29 @@ public final class AiClient {
         });
     }
 
-    private static CompletableFuture<RawResult> dispatch(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
-        if ("anthropic".equals(Endpoints.resolveType(profile.apiType(), profile.apiUrl()))) {
-            return AnthropicClient.ask(profile, userMessage, history);
+    /**
+     * 特权请求一次工具都没调，通常说明模型没注意到 server_files（实测小模型会答“我没权限”）。
+     * 这不是致命错误，但主人排查时最需要这条线索，所以在日志里点名。
+     */
+    private static void warnIfPrivilegedWithoutTools(ChatContext ctx, ToolRun run) {
+        if (!ctx.serverTools()) {
+            return;
         }
-        return OpenAiClient.ask(profile, userMessage, history);
+        if (run.calls() == 0) {
+            AiChatMod.LOGGER.warn("特权请求没有调用任何工具：{}（模型可能没注意到 server_files，"
+                    + "若反复出现请检查 system_prompt.txt 的工具规则是否已更新）", ctx.playerName());
+        } else if (StateManager.isDebug()) {
+            AiChatMod.LOGGER.info("[debug] 特权请求共调用工具 {} 次，回灌 {} 字符",
+                    run.calls(), run.resultCharsUsed());
+        }
+    }
+
+    private static CompletableFuture<RawResult> dispatch(
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
+        if ("anthropic".equals(Endpoints.resolveType(profile.apiType(), profile.apiUrl()))) {
+            return AnthropicClient.ask(profile, userMessage, history, run);
+        }
+        return OpenAiClient.ask(profile, userMessage, history, run);
     }
 
     private static final int LOG_PREVIEW_LENGTH = 200;

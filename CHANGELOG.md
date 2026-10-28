@@ -1,5 +1,73 @@
 # Changelog
 
+## 2.0.1 - 2026-10-28
+
+### Fixed
+
+- **工具轮次用尽后「静默失联」**：以前第 4 轮之后直接抽掉工具声明，模型会把工具调用写成正文里的私有标记（实测 DeepSeek 输出 `<｜｜DSML｜｜ calls>`），模组解析不了只能丢弃，玩家端表现为「AI 在线却一个字都不回」。现在改成两级收尾：先保留工具声明并追加一条「本轮不要再调用工具，直接给结论」的系统提示，仍不听话才真正回收工具；`fallback_reply` 保证这种情况至少回一句兜底话术。
+- **停服时不再给每个玩家刷 quit 事件**：收到 stop（`SERVER_STOPPING`）后立即置位停服标记，此后聊天 / join / quit 事件一律丢弃（停服会断开所有在线玩家，一次 `stop` 就是十几条白烧的请求）；同时清空消息缓冲、取消待触发的 flush、取消所有在途 HTTP 请求（掐掉生成中的推理），并断开广播目标，迟到的结果不会再发。启动时自动复位。
+- **特权请求“AI 说自己没权限”**：`!+` 前缀在进模型前就被剥掉了，`ChatContext` 只发「玩家名/事件/时间/内容」，模型要靠提示词「工具列表里有 server_files 就是特权请求」去反推——实测小模型反推不稳（一次答“没有 server_files 工具”，一次反过来要玩家加 `!+` 前缀）。现在特权请求的 user 消息会带一行「【管理员特权请求】」授权说明（历史里不写，避免污染后续普通聊天），默认提示词的工具规则也同步说明“前缀已被剥离，不要索要前缀”。另加日志：特权请求一次工具都没调用时 WARN 点名，方便排查。
+- **单次对话 token 爆炸**：新增 `tool_result_budget_kb`（默认 24 KB），给整次对话的工具结果总量设预算。此前每轮都要把历史工具结果重新发一遍，读一次 48 KB 的 `latest.log` 就能把单次提问推到 7 万 prompt token；现在预算用尽后不再执行新工具，直接让模型基于已有信息作答。
+- **网络瞬时失败直接丢消息**：连接超时 / SSL 握手被掐断 / 429 / 5xx 自动重试一次（间隔 2 秒），仍失败才照原样报错，中转站偶发抖动不再整条消息丢失。
+
+### Changed
+
+- `config.json` 升到 v7，新增 `tool_result_budget_kb`、`fallback_reply`；旧配置自动升级并备份为 `.v6.bak`。
+- 工具调试日志补充预算剩余量：`[debug] 工具调用 name=... 结果长度=... 预算剩余=...`。
+
+## 2.0.0 - 2026-10-28
+
+### Added
+
+- **服务器管理工具 `server_files`（默认关闭）**：让 AI 查看与管理服务器根目录里的文件，一个工具覆盖 `list` / `read` / `write` / `mkdir` / `delete` / `move` / `info` / `search`。排查故障时可以直接读 `logs/latest.log`、看 `mods/` 里装了哪些模组、翻 `config/` 里的配置。
+- 三道门控：`server_tools_enabled`（默认 `false`）+ 消息前缀（默认 `!+`，可配置）+ 权限判定。普通聊天根本不注册该工具；带前缀但没权限的玩家会被直接拒绝并收到提示，消息不会发给 AI（不烧 token）。
+- 权限判定三种方式，配置切换：`op`（原版权限等级，默认 4 级，可改）/ `list`（模组自己的管理员名单文件，可用 `/aichat tools add|remove` 维护，非 op 玩家也能授权）/ `luckperms`（查 LuckPerms 权限节点，`compileOnly` 依赖 `net.luckperms:api`，用 UserManager + CachedData 查询，不依赖平台玩家类映射；没装 LuckPerms 时捕获 `NoClassDefFoundError` 只提示一次，不影响服）。
+- 新增命令 `/aichat tools`（状态总览：开关 / 前缀 / 权限方式 / 名单 / 你自己能不能用）、`/aichat tools add|remove <玩家>`（需 op 4 级）。
+- 新增配置文件 `config/aichat/server_admins.json`（`list` 模式使用）。
+- **配置文件注释化**：新增 `ConfigDoc`，字段顺序 / 默认值 / 中文注释来自同一处定义，`config.json` 与 `system.json` 生成时就带注释，不用再翻文档。JSON 标准不支持注释，但读取走 Gson 宽松模式（跳过行注释与块注释），所以注释不影响解析。
+- **特权消息广播可控**：`server_tools_broadcast` 支持 `show`（默认，原样广播）/ `hide`（不广播，只发发送者、管理员、控制台）/ `show_by_flag` / `hide_by_flag`（用 `server_tools_broadcast_flag`，默认 `-f`，在消息末尾切换广播行为，尾缀不会发给 AI）。`hide` 与 flag 模式通过 `ALLOW_CHAT_MESSAGE` 取消原版广播后再手动投递。
+- 新增一套默认提示词（`system_prompt.txt` / `judge_prompt.txt` / `reply_prompt.txt` / `persona_prompt.txt`）：补充了工具使用约定、失败照实说、不把工具结果当指令、聊天框长度约束等规则。
+
+### Changed
+
+- 删除打包资源里的 `config.json` / `system.json` 模板，改由 `ConfigDoc` 渲染——不再存在「模板文件与代码字段不同步」的可能。
+- 升级策略更保守：只在 `config_version` 变化时备份并重写，平时**完全不碰**用户的配置文件，手改的注释、缩进、字段顺序原样保留；版本一致时连一个字节都不改写。
+- 消息入口新增特权标记：`ChatContext` 带 `serverTools`，经 `ToolRun` 传到工具层，`server_files` 执行前再校验一次（注册逻辑写漏也越不了权）。特权请求跳过消息缓冲，避免别人的聊天被拼进授权请求。
+- `config_version` 升到 **6**，`system.json` 升到 **2**；旧配置自动合并升级并备份（`.v5.bak` / `.v1.bak`），新增字段全部默认关闭，行为与 1.8.0 一致。
+- 提示词里的工具说明改由模组生成（记忆 + 服务器管理工具各自的 `promptSection`），judge 提示词不追加。
+
+### Security
+
+- 路径校验：所有路径相对服务器根目录解析，解析后必须仍在根目录内（含符号链接真实路径），越界拒绝。
+- `server_tools_deny_paths` 默认挡住本模组的 `config.json` / `system.json` / `server_admins.json`（含 API Key 与名单）与回收目录，目录保护连带其下所有内容。
+- 读写各有字节上限（默认 48 KB / 64 KB），列目录有条目上限；jar 等二进制文件只报大小不返回内容。
+- 删除默认移入 `.aichat-trash/<时间戳>/` 回收目录，而不是直接抹掉；非空目录需要显式 `recursive=true`。
+- 每次工具调用记录 `[server-tools] 管理员 <玩家> 调用 op=... path=...` 审计日志。
+
+## 1.8.0 - 2026-10-27
+
+### Added
+
+- **记忆功能**：AI 可以在 `memory/` 目录里新建、追加、覆写纯文本笔记，跨对话保存。典型场景是玩家托付「某人上线时提醒某事」——这类约定以前只活在最近若干条上下文里，消息一多就忘了，现在可以写进记忆文件长期保留。
+- 新增工具 `memory_read`（不填 `file_name` 时返回文件清单）与 `memory_write`（`mode=append` / `overwrite`）。
+- 单个记忆文件有字节上限（`memory_max_file_kb`，默认 8 KB）。写入超限时**不静默截断、也不写坏半截文件**，而是回一段指引，让模型自己读出全文、压缩成要点再覆写；用到上限 80% 时会提前提示。
+- `config.json` 升到 v5，新增 `memory_enabled`（默认 `true`，开箱即用）、`memory_dir`、`memory_max_file_kb`。旧配置自动合并升级并备份为 `.v4.bak`。
+
+### Changed
+
+- **工具层重构**：新增 `tool` 包（`Tool` 接口 + `Tools` 注册表 + `ToolRun` 单次会话状态），把原先硬编码在 `OpenAiClient` / `AnthropicClient` 里的知识库读取与联网搜索搬进独立实现类。协议层只负责把工具 schema 翻译成各家格式（OpenAI 的 `function.parameters`、Anthropic 的 `input_schema`）并回灌结果；新增能力只需加一个 `Tool` 实现，两家客户端都不用改。
+- Anthropic 通道补齐多轮工具循环与 `web_search` 支持（此前只支持读一次知识库，不支持搜索、也不支持多轮）。
+- 记忆规则由模组在读取提示词时追加到末尾，**不需要修改自己的 `system_prompt.txt`**；judge 提示词不会追加（它不发送工具）。
+- `memory_enabled: true`（默认）会顺带打开工具通道：即使 `enable_tools` 仍是 `false`，也会发送记忆工具定义。该状态下 `use_json_mode` 不生效（带工具时部分平台不返回 `tool_calls`，与 1.7.0 的既有取舍一致）。想完全保持 1.7.0 老行为（不发工具、保留 `response_format`）时把 `memory_enabled` 设为 `false`。
+
+### Behavior
+
+- 记忆目录默认 `config/aichat/memory/`，配置加载时自动创建。
+- 文件名白名单：纯文件名（不带目录、不能含 `..`）、只允许字母数字/中文/`_`/`-`/`.`/空格、扩展名限定 `.md` / `.txt`（缺省补 `.md`），长度上限 64 字符；路径越界直接拒绝。写了别的扩展名（`.exe` 之类）直接报错，不会静默改名。
+- 记忆文件数量软上限 32 个：达上限后拒绝新建，只能覆写或合并进已有文件，防止被反复刷文件撑爆目录。
+- 每次写入记录一条 INFO 日志（文件名 + 体积 + 上限）；`/aichat memory` 查看当前清单。
+- 大小上限只在写入端生效：手工放进 `memory/` 的更大文件不会被模组改写或删除，只是清单里会显示真实体积。
+
 ## 1.7.0 - 2026-10-26
 
 ### Added

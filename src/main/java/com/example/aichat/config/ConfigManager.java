@@ -2,6 +2,8 @@ package com.example.aichat.config;
 
 import com.example.aichat.AiChatMod;
 import com.example.aichat.knowledge.KnowledgeReader;
+import com.example.aichat.memory.MemoryStore;
+import com.example.aichat.servertools.ServerToolAccess;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
 import com.google.gson.JsonElement;
@@ -16,9 +18,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
-import java.util.Locale;
 import java.util.Map;
 
+/**
+ * 配置读写入口。
+ * <p>
+ * 2.0.0 起 config.json / system.json 由 {@link ConfigDoc} 生成：文件里带 {@code //} 注释，
+ * 读取时用宽松 JSON 读法跳过注释（Gson 的 JsonParser 本身就是宽松读），写入时按字段表重新渲染。
+ * 平时（版本未变）完全不重写用户的文件，所以玩家自己加的注释、缩进、空行都会原样保留；
+ * 只有 config_version 变高时才会备份并重写一次，把新字段和新说明补进去。
+ */
 public final class ConfigManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final String PLACEHOLDER_KEY = "sk-your-key-here";
@@ -32,8 +41,10 @@ public final class ConfigManager {
      * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
      */
     private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
-    private static final int CURRENT_CONFIG_VERSION = 4;
-    private static final int CURRENT_SYSTEM_VERSION = 1;
+    /** 配置版本：7 = 2.0.1（工具结果总预算 + 失败兜底话术）。 */
+    public static final int CURRENT_CONFIG_VERSION = 7;
+    /** system.json 版本：2 = 带注释的渲染。 */
+    public static final int CURRENT_SYSTEM_VERSION = 2;
 
     private static volatile ModConfig config;
     private static volatile SystemConfig systemConfig;
@@ -54,12 +65,11 @@ public final class ConfigManager {
     public static synchronized void reload() {
         try {
             Files.createDirectories(modConfigDir);
-            copyIfMissing("config.json");
 
             Path configFile = modConfigDir.resolve("config.json");
-            upgradeFile(configFile, "config.json", CURRENT_CONFIG_VERSION, "config_version");
-            JsonObject root = JsonParser.parseString(
-                    Files.readString(configFile, StandardCharsets.UTF_8)).getAsJsonObject();
+            JsonObject root = loadOrCreate(
+                    configFile, ConfigDoc.CONFIG_ENTRIES, CURRENT_CONFIG_VERSION,
+                    "config_version", "config.json", false);
 
             boolean rewriteConfig = migrateLegacyPersona(root);
             ModConfig loaded = GSON.fromJson(root, ModConfig.class);
@@ -68,14 +78,14 @@ public final class ConfigManager {
             }
             applyDefaults(loaded);
             if (rewriteConfig) {
-                Files.writeString(configFile, GSON.toJson(root), StandardCharsets.UTF_8);
+                writeRendered(configFile, ConfigDoc.CONFIG_ENTRIES, root, false);
             }
 
-            copyIfMissing("system.json");
             Path systemFile = modConfigDir.resolve("system.json");
-            upgradeFile(systemFile, "system.json", CURRENT_SYSTEM_VERSION, "version");
-            SystemConfig loadedSystem = GSON.fromJson(
-                    Files.readString(systemFile, StandardCharsets.UTF_8), SystemConfig.class);
+            JsonObject systemRoot = loadOrCreate(
+                    systemFile, ConfigDoc.SYSTEM_ENTRIES, CURRENT_SYSTEM_VERSION,
+                    "version", "system.json", true);
+            SystemConfig loadedSystem = GSON.fromJson(systemRoot, SystemConfig.class);
             if (loadedSystem == null) {
                 loadedSystem = new SystemConfig();
             }
@@ -95,6 +105,10 @@ public final class ConfigManager {
             copyIfMissing(DEFAULT_REPLY_PROMPT_FILE);
 
             Files.createDirectories(modConfigDir.resolve(loaded.knowledge_dir));
+            if (loaded.memory_enabled) {
+                Files.createDirectories(modConfigDir.resolve(loaded.memory_dir));
+            }
+            ServerToolAccess.reloadAdminList();
         } catch (IOException | JsonParseException e) {
             throw new RuntimeException("无法加载 AI Chat 配置: " + e.getMessage(), e);
         }
@@ -122,6 +136,51 @@ public final class ConfigManager {
         if (target.buffer_max_chars < 1) {
             target.buffer_max_chars = 500;
         }
+        if (target.memory_dir == null || target.memory_dir.isBlank()) {
+            target.memory_dir = "memory";
+        }
+        if (target.memory_max_file_kb < 1) {
+            target.memory_max_file_kb = 8;
+        }
+        applyServerToolDefaults(target);
+    }
+
+    private static void applyServerToolDefaults(ModConfig target) {
+        if (target.server_tools_prefix == null) {
+            target.server_tools_prefix = "!+";
+        }
+        if (target.server_tools_permission_mode == null || target.server_tools_permission_mode.isBlank()) {
+            target.server_tools_permission_mode = "op";
+        }
+        target.server_tools_permission_mode = target.server_tools_permission_mode.trim().toLowerCase();
+        if (target.server_tools_permission_level < 1 || target.server_tools_permission_level > 4) {
+            target.server_tools_permission_level = 4;
+        }
+        if (target.server_tools_luckperms_node == null || target.server_tools_luckperms_node.isBlank()) {
+            target.server_tools_luckperms_node = "aichat.servertools";
+        }
+        if (target.server_tools_admins_file == null || target.server_tools_admins_file.isBlank()) {
+            target.server_tools_admins_file = "server_admins.json";
+        }
+        if (target.server_tools_read_max_kb < 1) {
+            target.server_tools_read_max_kb = 48;
+        }
+        if (target.server_tools_write_max_kb < 1) {
+            target.server_tools_write_max_kb = 64;
+        }
+        if (target.server_tools_list_max_entries < 1) {
+            target.server_tools_list_max_entries = 200;
+        }
+        if (target.server_tools_broadcast == null || target.server_tools_broadcast.isBlank()) {
+            target.server_tools_broadcast = "show";
+        }
+        target.server_tools_broadcast = target.server_tools_broadcast.trim().toLowerCase();
+        if (target.server_tools_broadcast_flag == null || target.server_tools_broadcast_flag.isBlank()) {
+            target.server_tools_broadcast_flag = "-f";
+        }
+        if (target.server_tools_deny_paths == null) {
+            target.server_tools_deny_paths = new String[0];
+        }
     }
 
     private static void applySystemDefaults(SystemConfig target) {
@@ -140,31 +199,19 @@ public final class ConfigManager {
     }
 
     /**
-     * 1.0.x 把人设保存在 config.json 的 persona_prompt 字段中。
-     * 升级时迁移到 persona_prompt.txt，并从 config.json 移除该字段。
+     * 读取配置文档：文件不存在时按字段表生成（带注释），版本偏低时备份后重写，
+     * 版本一致时原样读、一个字节都不动。
      */
-    private static boolean migrateLegacyPersona(JsonObject root) throws IOException {
-        if (!root.has(LEGACY_PERSONA_FIELD)) {
-            return false;
-        }
-        JsonElement legacy = root.get(LEGACY_PERSONA_FIELD);
-        if (legacy != null && legacy.isJsonPrimitive() && !legacy.getAsString().isBlank()) {
-            Path personaFile = modConfigDir.resolve(DEFAULT_PERSONA_FILE);
-            if (!Files.exists(personaFile)) {
-                Files.writeString(personaFile, legacy.getAsString(), StandardCharsets.UTF_8);
-            }
-        }
-        root.remove(LEGACY_PERSONA_FIELD);
-        return true;
-    }
-
-    /**
-     * 版本低于当前值时，备份原文件并用默认模板补齐缺失字段，已有值保持不变。
-     */
-    private static void upgradeFile(Path file, String resourceName, int currentVersion, String versionField)
+    private static JsonObject loadOrCreate(Path file, java.util.List<?> entries, int currentVersion,
+                                           String versionField, String displayName, boolean system)
             throws IOException {
-        String text = Files.readString(file, StandardCharsets.UTF_8);
-        JsonObject user = JsonParser.parseString(text).getAsJsonObject();
+        if (!Files.exists(file)) {
+            writeRendered(file, entries, ConfigDoc.defaults(entries), system);
+            AiChatMod.LOGGER.info("已生成默认配置：{}", displayName);
+            return ConfigDoc.defaults(entries);
+        }
+
+        JsonObject user = readLenient(file, displayName);
         int version = 1;
         if (user.has(versionField) && user.get(versionField).isJsonPrimitive()) {
             try {
@@ -174,25 +221,41 @@ public final class ConfigManager {
             }
         }
         if (version >= currentVersion) {
-            return;
+            return user;
         }
 
-        JsonObject merged = mergeDefaults(defaultJson(resourceName), user);
+        JsonObject merged = mergeDefaults(ConfigDoc.defaults(entries), user);
         merged.addProperty(versionField, currentVersion);
         backup(file, version);
-        Files.writeString(file, GSON.toJson(merged), StandardCharsets.UTF_8);
-        AiChatMod.LOGGER.info("已升级 {}（v{} -> v{}），原文件已备份", resourceName, version, currentVersion);
+        writeRendered(file, entries, merged, system);
+        AiChatMod.LOGGER.info("已升级 {}（v{} -> v{}），原文件已备份，新字段与注释已补齐",
+                displayName, version, currentVersion);
+        return merged;
     }
 
-    private static JsonObject defaultJson(String name) throws IOException {
-        try (InputStream in = ConfigManager.class
-                .getResourceAsStream("/assets/aichat/default_config/" + name)) {
-            if (in == null) {
-                throw new IOException("缺少默认资源: " + name);
+    /**
+     * 宽松读法：JsonParser.parseString 内部就是宽松模式，会跳过行注释与块注释，
+     * 所以配置文件里写注释不影响解析；解析失败时把行号信息原样带出来。
+     */
+    public static JsonObject readLenient(Path file, String displayName) throws IOException {
+        String text = Files.readString(file, StandardCharsets.UTF_8);
+        try {
+            JsonElement element = JsonParser.parseString(text);
+            if (element == null || !element.isJsonObject()) {
+                throw new IOException(displayName + " 的根节点必须是一个 JSON 对象");
             }
-            String text = new String(in.readAllBytes(), StandardCharsets.UTF_8);
-            return JsonParser.parseString(text).getAsJsonObject();
+            return element.getAsJsonObject();
+        } catch (JsonParseException | IllegalStateException e) {
+            throw new IOException(displayName + " 解析失败：" + e.getMessage(), e);
         }
+    }
+
+    private static void writeRendered(Path file, java.util.List<?> entries, JsonObject values,
+                                      boolean system) throws IOException {
+        String text = system
+                ? ConfigDoc.renderSystem(values)
+                : ConfigDoc.renderConfig(values);
+        Files.writeString(file, text, StandardCharsets.UTF_8);
     }
 
     private static JsonObject mergeDefaults(JsonObject defaults, JsonObject user) {
@@ -266,9 +329,20 @@ public final class ConfigManager {
     }
 
     /**
-     * 读取提示词模板并替换知识库列表、人设占位符。
+     * 读取提示词模板并替换知识库列表、人设占位符（不带工具说明，判断模型用这个）。
      */
     public static String readPrompt(String fileName) {
+        return readPrompt(fileName, false);
+    }
+
+    /**
+     * 读取提示词模板。
+     *
+     * @param toolGuides 是否在末尾追加工具说明（记忆 + 服务器管理工具）。这些规则由模组生成、
+     *                   不写进用户的 system_prompt.txt：升级时不会覆盖别人改过的提示词，
+     *                   也避免给只有判断任务的 judge 塞它用不到的说明。
+     */
+    public static String readPrompt(String fileName, boolean toolGuides) {
         try {
             String template = Files.readString(modConfigDir.resolve(fileName), StandardCharsets.UTF_8);
             String files = String.join("\n", KnowledgeReader.listFiles());
@@ -276,9 +350,16 @@ public final class ConfigManager {
                 files = "（无）";
             }
             String persona = readPersonaPrompt();
-            return template
+            String prompt = template
                     .replace("{KNOWLEDGE_FILE_LIST}", files)
                     .replace("{PERSONA_PROMPT}", persona);
+            if (toolGuides) {
+                if (MemoryStore.enabled()) {
+                    prompt = prompt + MemoryStore.promptSection();
+                }
+                prompt = prompt + ServerToolAccess.promptSection();
+            }
+            return prompt;
         } catch (IOException e) {
             throw new RuntimeException("读取提示词文件失败: " + fileName, e);
         }
@@ -291,8 +372,9 @@ public final class ConfigManager {
                 current.api_key,
                 current.model,
                 current.api_type,
-                readPrompt(current.system_prompt_file),
+                readPrompt(current.system_prompt_file, true),
                 current.enable_tools,
+                current.memory_enabled,
                 current.use_json_mode,
                 current.enable_thinking,
                 current.send_thinking_field,
@@ -318,6 +400,7 @@ public final class ConfigManager {
                 or(settings.api_type, current.api_type),
                 readPrompt(or(settings.system_prompt_file, DEFAULT_JUDGE_PROMPT_FILE)),
                 false,
+                false,
                 true,
                 false,
                 disableThinking,
@@ -336,8 +419,9 @@ public final class ConfigManager {
                 or(settings.api_key, current.api_key),
                 or(settings.model, current.model),
                 or(settings.api_type, current.api_type),
-                readPrompt(or(settings.system_prompt_file, DEFAULT_REPLY_PROMPT_FILE)),
+                readPrompt(or(settings.system_prompt_file, DEFAULT_REPLY_PROMPT_FILE), true),
                 current.enable_tools,
+                current.memory_enabled,
                 current.use_json_mode,
                 current.enable_thinking,
                 current.send_thinking_field,
@@ -377,7 +461,7 @@ public final class ConfigManager {
             return true;
         }
         // 本地推理服务（Ollama / LM Studio / vLLM）通常不需要 Key
-        String normalized = url == null ? "" : url.toLowerCase(Locale.ROOT);
+        String normalized = url == null ? "" : url.toLowerCase(java.util.Locale.ROOT);
         return normalized.contains("localhost")
                 || normalized.contains("127.0.0.1")
                 || normalized.contains("[::1]");
@@ -385,5 +469,24 @@ public final class ConfigManager {
 
     private static String or(String value, String fallback) {
         return value == null || value.isBlank() ? fallback : value;
+    }
+
+    /**
+     * 1.0.x 把人设保存在 config.json 的 persona_prompt 字段中。
+     * 升级时迁移到 persona_prompt.txt，并从 config.json 移除该字段。
+     */
+    private static boolean migrateLegacyPersona(JsonObject root) throws IOException {
+        if (!root.has(LEGACY_PERSONA_FIELD)) {
+            return false;
+        }
+        JsonElement legacy = root.get(LEGACY_PERSONA_FIELD);
+        if (legacy != null && legacy.isJsonPrimitive() && !legacy.getAsString().isBlank()) {
+            Path personaFile = modConfigDir.resolve(DEFAULT_PERSONA_FILE);
+            if (!Files.exists(personaFile)) {
+                Files.writeString(personaFile, legacy.getAsString(), StandardCharsets.UTF_8);
+            }
+        }
+        root.remove(LEGACY_PERSONA_FIELD);
+        return true;
     }
 }
