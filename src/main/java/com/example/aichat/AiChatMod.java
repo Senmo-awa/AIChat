@@ -24,7 +24,8 @@ public class AiChatMod implements DedicatedServerModInitializer {
         UsageStore.init();
 
         ServerLifecycleEvents.SERVER_STARTED.register(AiDispatcher::setServer);
-        ServerLifecycleEvents.SERVER_STOPPING.register(server -> AiDispatcher.setServer(null));
+        // 停服：停发一切、清缓冲、中止在途推理（否则世界保存那几秒还在烧 token，且没人看得到）
+        ServerLifecycleEvents.SERVER_STOPPING.register(server -> AiDispatcher.shutdown());
 
         ChatListener.register();
         ConnectionListener.register();

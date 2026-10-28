@@ -395,7 +395,8 @@ public final class OpenAiClient {
                 .POST(HttpRequest.BodyPublishers.ofString(GSON.toJson(body), StandardCharsets.UTF_8))
                 .build();
 
-        return HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8))
+        // 登记底层 future：停服时由 InFlight 取消，等于掐掉正在生成的推理
+        return InFlight.track(HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)))
                 .thenApply(response -> {
                     if (StateManager.isDebug()) {
                         AiChatMod.LOGGER.info("[debug] OpenAI 兼容响应 HTTP {}：{}",
