@@ -41,8 +41,8 @@ public final class ConfigManager {
      * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
      */
     private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
-    /** 配置版本：6 = 2.0.0（带注释的配置 + 服务器管理工具）。 */
-    public static final int CURRENT_CONFIG_VERSION = 6;
+    /** 配置版本：7 = 2.0.1（工具结果总预算 + 失败兜底话术）。 */
+    public static final int CURRENT_CONFIG_VERSION = 7;
     /** system.json 版本：2 = 带注释的渲染。 */
     public static final int CURRENT_SYSTEM_VERSION = 2;
 

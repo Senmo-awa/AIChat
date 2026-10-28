@@ -16,6 +16,7 @@ import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParser;
 
+import java.io.IOException;
 import java.net.URI;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
@@ -24,6 +25,7 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Anthropic Messages API（POST /v1/messages，x-api-key 认证）。
@@ -38,6 +40,9 @@ public final class AnthropicClient {
     private static final String ANTHROPIC_VERSION = "2023-06-01";
     private static final int DEFAULT_MAX_TOKENS = 4096;
     private static final int MAX_TOOL_ROUNDS = 4;
+    /** 网络瞬时失败的重试次数与间隔。 */
+    private static final int MAX_NETWORK_ATTEMPTS = 2;
+    private static final int NETWORK_RETRY_DELAY_SECONDS = 2;
 
     private AnthropicClient() {
     }
@@ -52,32 +57,46 @@ public final class AnthropicClient {
 
         List<Tool> tools = Tools.active(
                 profile.toolsEnabled(), profile.memoryEnabled(), run != null && run.serverToolsAllowed());
-        return toolRound(profile, messages, 1, TokenUsage.ZERO, tools, run == null ? new ToolRun() : run);
+        return toolRound(profile, messages, 1, TokenUsage.ZERO,
+                tools, run == null ? new ToolRun() : run, false);
     }
 
     /**
      * 工具调用可能不止一轮（读知识库 → 查记忆 → 再回答）。每轮把 assistant 的 content 原样回传，
-     * 再把所有 tool_use 的结果作为一条 user 消息回灌；超过轮数上限后发一次不带工具的请求收尾。
+     * 再把所有 tool_use 的结果作为一条 user 消息回灌。
+     * <p>
+     * 轮次用尽后不立刻抽掉 tools：实测抽掉之后模型会把工具调用写成正文里的私有标记，
+     * 模组解析不了只能丢弃，玩家端就是「AI 不说话」。所以先保留工具声明、明确要求收尾，
+     * 仍不听话才真正回收工具。
      */
     private static CompletableFuture<RawResult> toolRound(
             ApiProfile profile, JsonArray messages, int round, TokenUsage used,
-            List<Tool> tools, ToolRun run) {
-        boolean lastChance = round > MAX_TOOL_ROUNDS;
-        JsonObject body = baseBody(profile, lastChance ? List.of() : tools);
-        if (lastChance && !tools.isEmpty()) {
-            AiChatMod.LOGGER.info("工具调用已达 {} 轮，最后一次请求不再提供工具，要求模型直接给出结论", MAX_TOOL_ROUNDS);
+            List<Tool> tools, ToolRun run, boolean usedTools) {
+        boolean exhausted = round > MAX_TOOL_ROUNDS;
+        boolean stripTools = round > MAX_TOOL_ROUNDS + 1;
+        if (exhausted) {
+            addMessage(messages, "user", stripTools
+                    ? "【系统】工具已经全部回收，本轮只能直接输出最终 JSON，不要再调用工具，也不要输出任何工具调用标记。"
+                    : "【系统】工具调用次数已达上限，本轮不要再调用工具，请直接用 JSON 给出最终结论。");
+            AiChatMod.LOGGER.info("工具调用已达 {} 轮，{}", MAX_TOOL_ROUNDS,
+                    stripTools ? "本轮回收工具，要求直接给出结论" : "本轮保留工具但要求收尾");
         }
+
+        JsonObject body = baseBody(profile, stripTools ? List.of() : tools);
         body.add("messages", messages);
 
-        return send(profile, body).thenCompose(response -> {
+        return sendWithRetry(profile, body).thenCompose(response -> {
             TokenUsage usage = used.plus(parseUsage(response));
             JsonArray toolUses = findToolUses(response);
             if (toolUses.isEmpty()) {
-                return CompletableFuture.completedFuture(new RawResult(extractText(response), usage));
+                return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
             }
-            if (lastChance) {
+            if (stripTools) {
                 AiChatMod.LOGGER.warn("模型在没有工具的情况下仍返回 tool_use，本次按不回复处理");
-                return CompletableFuture.completedFuture(new RawResult(extractText(response), usage));
+                return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
+            }
+            if (exhausted) {
+                return toolRound(profile, messages, round + 1, usage, tools, run, usedTools);
             }
 
             // assistant 的 content 原样回传（可能含 thinking 与 tool_use block）
@@ -107,7 +126,7 @@ public final class AnthropicClient {
             user.add("content", resultBlocks);
             messages.add(user);
 
-            return toolRound(profile, messages, round + 1, usage, tools, run);
+            return toolRound(profile, messages, round + 1, usage, tools, run, true);
         });
     }
 
@@ -121,6 +140,82 @@ public final class AnthropicClient {
                     + "\n\n【当前事件】\n" + userMessage;
         }
         return userMessage;
+    }
+
+    /**
+     * 收尾：把模型最后一条消息转成最终结果。
+     * 用过工具却没拿到可用 JSON（空内容 / 私有工具标记）时用兜底话术，避免玩家端完全没反馈。
+     */
+    private static RawResult finalResult(JsonObject response, TokenUsage usage, boolean usedTools) {
+        String content = extractText(response);
+        boolean empty = content == null || content.isBlank();
+        boolean markup = Fallbacks.looksLikeToolMarkup(content);
+        if (usedTools && (empty || markup)) {
+            String fallback = Fallbacks.replyJsonOrNull();
+            if (fallback != null) {
+                AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），本轮改用兜底话术回复",
+                        empty ? "content 为空" : "输出了工具调用标记");
+                return new RawResult(fallback, usage);
+            }
+            AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），且未配置 fallback_reply，本次按不回复处理",
+                    empty ? "content 为空" : "输出了工具调用标记");
+        }
+        return new RawResult(content, usage);
+    }
+
+    /**
+     * 网络瞬时失败（连接超时、握手被掐断、5xx、429）重试一次：
+     * 实测中转站偶发这些错误，直接丢弃整条消息体验很差。
+     */
+    private static CompletableFuture<JsonObject> sendWithRetry(ApiProfile profile, JsonObject body) {
+        return trySend(profile, body, 1);
+    }
+
+    private static CompletableFuture<JsonObject> trySend(ApiProfile profile, JsonObject body, int attempt) {
+        return send(profile, body).handle((result, error) -> {
+            if (error == null) {
+                return CompletableFuture.completedFuture(result);
+            }
+            Throwable cause = unwrap(error);
+            if (attempt >= MAX_NETWORK_ATTEMPTS || !isTransient(cause)) {
+                return CompletableFuture.<JsonObject>failedFuture(cause);
+            }
+            AiChatMod.LOGGER.warn("请求失败（第 {} 次）：{}，{} 秒后重试一次",
+                    attempt, ConsoleSafe.escape(String.valueOf(cause.getMessage())), NETWORK_RETRY_DELAY_SECONDS);
+            return delayedRetry(profile, body, attempt + 1);
+        }).thenCompose(future -> future);
+    }
+
+    private static CompletableFuture<JsonObject> delayedRetry(ApiProfile profile, JsonObject body, int attempt) {
+        return CompletableFuture.supplyAsync(() -> "",
+                        CompletableFuture.delayedExecutor(NETWORK_RETRY_DELAY_SECONDS, TimeUnit.SECONDS))
+                .thenCompose(ignored -> trySend(profile, body, attempt));
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        Throwable current = error;
+        for (int depth = 0; depth < 5 && current.getCause() != null && current.getCause() != current; depth++) {
+            current = current.getCause();
+        }
+        return current;
+    }
+
+    /** 只重试「重发可能成功」的错误：IO/超时/握手 与 429、5xx；4xx 参数错误重试没意义。 */
+    private static boolean isTransient(Throwable error) {
+        for (Throwable current = error; current != null; current = current.getCause()) {
+            if (current instanceof IOException) {
+                return true;
+            }
+            String message = current.getMessage();
+            if (message != null
+                    && (message.contains("API 返回 429") || message.contains("API 返回 5"))) {
+                return true;
+            }
+            if (current.getCause() == current) {
+                break;
+            }
+        }
+        return false;
     }
 
     private static JsonObject baseBody(ApiProfile profile, List<Tool> tools) {

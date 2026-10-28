@@ -2,6 +2,8 @@
 
 Minecraft 服务端聊天模组，支持 OpenAI 兼容与 Anthropic Messages 两类 API。AI 以可配置前缀参与聊天，可按需读取知识库，并支持消息缓冲、上下文记忆与双模型模式。
 
+文档：**本文件**为完整用法 · [UPDATE-2.0.0.md](UPDATE-2.0.0.md) 为 2.0.0 更新说明与升级步骤 · [CHANGELOG.md](CHANGELOG.md) 为逐版本变更记录。
+
 ## 环境要求
 
 - Minecraft 26.1.2
@@ -38,6 +40,8 @@ gradlew.bat build
    - `knowledge/`
 3. 在 `config.json` 中填写 `api_key`（双模型模式则填写 `system.json`），重启服务端或执行 `/aichat reload` 生效。修改配置无需重新构建。
 
+> 从旧版本升级请先读 [UPDATE-2.0.0.md](UPDATE-2.0.0.md)：升级会重写 `config.json` / `system.json`（原文件备份为 `.v<旧版本>.bak`），提示词文件则不会被覆盖。
+>
 > 2.0.0 起 `config.json` / `system.json` **自带中文注释**：每个字段上面都用 `//` 说明了作用，不用再翻文档。以 `//` 开头的行读取时会被忽略，可以放心改、也可以自己加注释；平时模组不会重写你的文件，只有 `config_version` 升级时才会备份并重写一次。
 
 ## 配置
@@ -76,6 +80,8 @@ gradlew.bat build
 | `buffer_delay_seconds` | 最后一条消息后等待秒数，默认 5 |
 | `buffer_max_messages` | 缓冲区最多消息条数，默认 10，满了立即发送 |
 | `buffer_max_chars` | 缓冲区最多字符数，默认 500，满了立即发送 |
+| `tool_result_budget_kb` | 单次对话所有工具结果的总预算（KB），默认 24，`0` = 不限。每一轮工具调用都会把之前的结果重新发一遍，预算用来约束这种累积开销；用尽后不再执行新工具，直接让模型基于已有信息作答 |
+| `fallback_reply` | 工具轮次用尽或模型没给出合法 JSON 时代替沉默播报的一句话，默认「（这轮没理出结果，请再说一次）」，留空 = 保持静默 |
 | `server_tools_enabled` | 服务器管理工具总开关，默认 `false`（关闭）。开启后，有权限的管理员在聊天里用前缀发起的请求才能读写服务器根目录，见「服务器管理工具」 |
 | `server_tools_prefix` | 特权请求前缀，默认 `!+`；只有以它开头的聊天消息才允许调用 `server_files`。留空表示关闭前缀通道 |
 | `server_tools_permission_mode` | 权限判定方式：`op`（原版权限等级，默认）/ `list`（管理员名单文件）/ `luckperms`（权限节点） |
@@ -149,7 +155,7 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 | `/aichat ban <玩家>` | 该玩家的发言不再发给 AI；离线玩家也可操作 |
 | `/aichat unban <玩家>` | 解除禁止 |
 | `/aichat banlist` | 查看禁止列表 |
-| `/aichat tools` | 查看服务器管理工具状态：开关、前缀、权限方式、管理员名单、你自己能不能用 |
+| `/aichat tools` | 查看服务器管理工具状态：开关、前缀、权限方式、广播方式、管理员名单、你自己能不能用（管理员级命令） |
 | `/aichat tools add <玩家>` | 把玩家加入名单（需 op 4 级；仅 `list` 模式生效） |
 | `/aichat tools remove <玩家>` | 把玩家移出名单（需 op 4 级） |
 
@@ -272,6 +278,8 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 ## 服务器管理工具（2.0.0 新增，默认关闭）
 
 让 AI 能**查看与管理服务器根目录里的文件**：排查故障时读 `logs/latest.log`、看 `mods/` 里装了哪些模组、检查 `config/` 里的配置、临时记录诊断结果。默认关闭，并且**只对管理员生效**。
+
+> 升级注意、配置项一览与逐步验证清单见 [UPDATE-2.0.0.md](UPDATE-2.0.0.md)。
 
 ### 三道门，缺一不可
 
@@ -404,6 +412,14 @@ token 用量按行追加到 `config/aichat/usage.jsonl`，两者都可直接查�
 3. 如果模型在「分析日志 / 总结事件」而不是输出 `{"action":...}`：说明提示词没到模型，多半是中转站丢了 `system`，确认 `system_prompt_in_user` 为 `true`。
 4. 如果响应里 `content` 为空且 `finish_reason=length`：输出预算被思考 token 吃光了，调大 `max_output_tokens`（或换非推理模型）。
 5. 如果看到「工具调用达到 N 轮上限」：模型在读知识库时反复猜文件名，检查 `knowledge/` 目录里是否真有它要的文件。
+
+## 相关文档
+
+| 文件 | 内容 |
+|---|---|
+| `README.md` | 完整用法、配置项、命令、排查 |
+| `UPDATE-2.0.0.md` | 2.0.0 更新说明：新功能怎么用、升级步骤、兼容性与已知限制 |
+| `CHANGELOG.md` | 逐版本变更记录 |
 
 ## 许可证
 
