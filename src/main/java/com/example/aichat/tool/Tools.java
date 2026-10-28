@@ -6,6 +6,8 @@ import com.example.aichat.memory.MemoryReadTool;
 import com.example.aichat.memory.MemoryStore;
 import com.example.aichat.memory.MemoryWriteTool;
 import com.example.aichat.search.SearchTool;
+import com.example.aichat.servertools.ServerFilesTool;
+import com.example.aichat.servertools.ServerToolAccess;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.text.ConsoleSafe;
 import com.google.gson.JsonObject;
@@ -16,14 +18,20 @@ import java.util.List;
 /**
  * 工具注册表：按配置决定这一轮对话暴露哪些工具，并统一执行。
  * <p>
- * 两个开关互相独立：
+ * 三组开关互相独立：
  * <ul>
  *   <li>enable_tools —— 知识库检索 + 联网搜索（老行为，默认关闭）；</li>
- *   <li>memory_enabled —— 记忆读写（默认开启，因此会顺带打开工具通道）。</li>
+ *   <li>memory_enabled —— 记忆读写（默认开启，因此会顺带打开工具通道）；</li>
+ *   <li>serverTools —— 服务器管理工具，只对「带前缀且有权限的管理员请求」成立，
+ *       由 {@link com.example.aichat.servertools.ServerToolAccess} 在消息入口判定。</li>
  * </ul>
  */
 public final class Tools {
     private Tools() {
+    }
+
+    public static List<Tool> active(boolean knowledgeAndSearch, boolean memory) {
+        return active(knowledgeAndSearch, memory, false);
     }
 
     /**
@@ -31,8 +39,9 @@ public final class Tools {
      *
      * @param knowledgeAndSearch config.enable_tools
      * @param memory             config.memory_enabled
+     * @param serverTools        这条请求是否为有权限的管理员特权请求
      */
-    public static List<Tool> active(boolean knowledgeAndSearch, boolean memory) {
+    public static List<Tool> active(boolean knowledgeAndSearch, boolean memory, boolean serverTools) {
         List<Tool> tools = new ArrayList<>();
         if (knowledgeAndSearch) {
             tools.add(new KnowledgeTool());
@@ -43,6 +52,11 @@ public final class Tools {
         if (memory && MemoryStore.enabled()) {
             tools.add(new MemoryReadTool());
             tools.add(new MemoryWriteTool());
+        }
+        // 服务器管理工具不看 enable_tools：它有自己的总开关与权限判定，
+        // 这里再确认一次总开关，防止「权限判定过了但配置后来被关掉」的窗口期。
+        if (serverTools && ServerToolAccess.active()) {
+            tools.add(new ServerFilesTool());
         }
         return List.copyOf(tools);
     }

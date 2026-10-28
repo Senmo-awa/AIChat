@@ -6,6 +6,7 @@ import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.text.ConsoleSafe;
+import com.example.aichat.tool.ToolRun;
 import com.example.aichat.usage.TokenUsage;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
@@ -25,16 +26,20 @@ public final class AiClient {
 
     public static CompletableFuture<AiResult> ask(ChatContext ctx, List<ConversationTurn> history) {
         String userMessage = ctx.toUserMessage();
+        // 特权标记随 ToolRun 传进工具层：只有这条请求真的有权限，server_files 才会被注册
+        ToolRun run = new ToolRun(ctx.playerName(), ctx.serverTools());
 
         if (!ConfigManager.isDualModelEnabled()) {
-            return dispatch(ConfigManager.singleProfile(), userMessage, history)
+            return dispatch(ConfigManager.singleProfile(), userMessage, history, run)
                     .thenApply(raw -> parseReply(raw.text(), raw.usage()));
         }
 
         // 判断模型也要带历史：提示词里的"结合上下文""玩家在和别人聊天"等规则依赖上下文，
         // 只给当前事件会让 judge 变成盲判，和单模型模式的表现不一致。
         ApiProfile judgeProfile = ConfigManager.judgeProfile();
-        return dispatch(judgeProfile, userMessage, history).thenCompose(judgeRaw -> {
+        // 判断模型永远不给工具：它只输出一行 JSON，给它工具只会浪费 token
+        return dispatch(judgeProfile, userMessage, history, new ToolRun(ctx.playerName(), false))
+                .thenCompose(judgeRaw -> {
             TokenUsage judgeUsage = judgeRaw.usage();
             boolean shouldReply = judgeSaysReply(judgeRaw.text());
             if (StateManager.isDebug()) {
@@ -46,7 +51,7 @@ public final class AiClient {
             }
 
             ApiProfile replyProfile = ConfigManager.replyProfile();
-            return dispatch(replyProfile, userMessage, history).thenApply(replyRaw -> {
+            return dispatch(replyProfile, userMessage, history, run).thenApply(replyRaw -> {
                 AiResult reply = parseReplyContent(replyRaw.text(), replyRaw.usage());
                 return new AiResult(
                         reply.reply(),
@@ -58,11 +63,11 @@ public final class AiClient {
     }
 
     private static CompletableFuture<RawResult> dispatch(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
         if ("anthropic".equals(Endpoints.resolveType(profile.apiType(), profile.apiUrl()))) {
-            return AnthropicClient.ask(profile, userMessage, history);
+            return AnthropicClient.ask(profile, userMessage, history, run);
         }
-        return OpenAiClient.ask(profile, userMessage, history);
+        return OpenAiClient.ask(profile, userMessage, history, run);
     }
 
     private static final int LOG_PREVIEW_LENGTH = 200;

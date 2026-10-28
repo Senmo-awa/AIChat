@@ -62,6 +62,14 @@ public final class AiDispatcher {
             return;
         }
 
+        // 特权请求（管理员用前缀发起的服务器管理请求）不进缓冲区：
+        // 缓冲会把同一时间别人的话一起拼进来，那份授权就说不清是谁给的了。
+        if (ctx.serverTools()) {
+            AiChatMod.LOGGER.info("服务器管理工具请求：{}（跳过消息缓冲）", ctx.playerName());
+            process(List.of(ctx));
+            return;
+        }
+
         if (!ConfigManager.get().buffer_enabled) {
             process(List.of(ctx));
             return;

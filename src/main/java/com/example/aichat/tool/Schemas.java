@@ -27,6 +27,21 @@ public final class Schemas {
         return property;
     }
 
+    public static JsonObject booleanProperty(String description, boolean defaultValue) {
+        JsonObject property = new JsonObject();
+        property.addProperty("type", "boolean");
+        property.addProperty("description", description);
+        property.addProperty("default", defaultValue);
+        return property;
+    }
+
+    public static JsonObject integerProperty(String description) {
+        JsonObject property = new JsonObject();
+        property.addProperty("type", "integer");
+        property.addProperty("description", description);
+        return property;
+    }
+
     /**
      * @param properties 属性表
      * @param required   必填字段名，可以为空

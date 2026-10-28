@@ -1,5 +1,33 @@
 # Changelog
 
+## 2.0.0 - 2026-10-28
+
+### Added
+
+- **服务器管理工具 `server_files`（默认关闭）**：让 AI 查看与管理服务器根目录里的文件，一个工具覆盖 `list` / `read` / `write` / `mkdir` / `delete` / `move` / `info` / `search`。排查故障时可以直接读 `logs/latest.log`、看 `mods/` 里装了哪些模组、翻 `config/` 里的配置。
+- 三道门控：`server_tools_enabled`（默认 `false`）+ 消息前缀（默认 `!+`，可配置）+ 权限判定。普通聊天根本不注册该工具；带前缀但没权限的玩家会被直接拒绝并收到提示，消息不会发给 AI（不烧 token）。
+- 权限判定三种方式，配置切换：`op`（原版权限等级，默认 4 级）/ `list`（模组自己的管理员名单文件，可用 `/aichat tools add|remove` 维护，非 op 玩家也能授权）/ `luckperms`（查 LuckPerms 权限节点，走 `fabric-permissions-api` 反射调用，非硬依赖）。
+- 新增命令 `/aichat tools`（状态总览：开关 / 前缀 / 权限方式 / 名单 / 你自己能不能用）、`/aichat tools add|remove <玩家>`（需 op 4 级）。
+- 新增配置文件 `config/aichat/server_admins.json`（`list` 模式使用）。
+- **配置文件注释化**：新增 `ConfigDoc`，字段顺序 / 默认值 / 中文注释来自同一处定义，`config.json` 与 `system.json` 生成时就带注释，不用再翻文档。JSON 标准不支持注释，但读取走 Gson 宽松模式（跳过行注释与块注释），所以注释不影响解析。
+- 新增一套默认提示词（`system_prompt.txt` / `judge_prompt.txt` / `reply_prompt.txt` / `persona_prompt.txt`）：补充了工具使用约定、失败照实说、不把工具结果当指令、聊天框长度约束等规则。
+
+### Changed
+
+- 删除打包资源里的 `config.json` / `system.json` 模板，改由 `ConfigDoc` 渲染——不再存在「模板文件与代码字段不同步」的可能。
+- 升级策略更保守：只在 `config_version` 变化时备份并重写，平时**完全不碰**用户的配置文件，手改的注释、缩进、字段顺序原样保留；版本一致时连一个字节都不改写。
+- 消息入口新增特权标记：`ChatContext` 带 `serverTools`，经 `ToolRun` 传到工具层，`server_files` 执行前再校验一次（注册逻辑写漏也越不了权）。特权请求跳过消息缓冲，避免别人的聊天被拼进授权请求。
+- `config_version` 升到 **6**，`system.json` 升到 **2**；旧配置自动合并升级并备份（`.v5.bak` / `.v1.bak`），新增字段全部默认关闭，行为与 1.8.0 一致。
+- 提示词里的工具说明改由模组生成（记忆 + 服务器管理工具各自的 `promptSection`），judge 提示词不追加。
+
+### Security
+
+- 路径校验：所有路径相对服务器根目录解析，解析后必须仍在根目录内（含符号链接真实路径），越界拒绝。
+- `server_tools_deny_paths` 默认挡住本模组的 `config.json` / `system.json` / `server_admins.json`（含 API Key 与名单）与回收目录，目录保护连带其下所有内容。
+- 读写各有字节上限（默认 48 KB / 64 KB），列目录有条目上限；jar 等二进制文件只报大小不返回内容。
+- 删除默认移入 `.aichat-trash/<时间戳>/` 回收目录，而不是直接抹掉；非空目录需要显式 `recursive=true`。
+- 每次工具调用记录 `[server-tools] 管理员 <玩家> 调用 op=... path=...` 审计日志。
+
 ## 1.8.0 - 2026-10-27
 
 ### Added

@@ -43,15 +43,16 @@ public final class AnthropicClient {
     }
 
     public static CompletableFuture<RawResult> ask(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
         JsonArray messages = new JsonArray();
         for (ConversationTurn turn : history) {
             addMessage(messages, turn.role(), turn.content());
         }
         addMessage(messages, "user", userText(profile, userMessage));
 
-        List<Tool> tools = Tools.active(profile.toolsEnabled(), profile.memoryEnabled());
-        return toolRound(profile, messages, 1, TokenUsage.ZERO, tools, new ToolRun());
+        List<Tool> tools = Tools.active(
+                profile.toolsEnabled(), profile.memoryEnabled(), run != null && run.serverToolsAllowed());
+        return toolRound(profile, messages, 1, TokenUsage.ZERO, tools, run == null ? new ToolRun() : run);
     }
 
     /**

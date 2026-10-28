@@ -2,7 +2,9 @@ package com.example.aichat.event;
 
 import com.example.aichat.ai.AiDispatcher;
 import com.example.aichat.ai.ChatContext;
+import com.example.aichat.servertools.ServerToolAccess;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
+import net.minecraft.network.chat.Component;
 
 public final class ChatListener {
     /**
@@ -33,12 +35,36 @@ public final class ChatListener {
                 if (content == null || content.isBlank()) {
                     return;
                 }
+                String playerName = sender.getName().getString();
+
+                // 特权前缀（默认 !+）：只有它开头的消息才可能带上服务器管理工具。
+                // 权限在这里判定一次，结果随 ChatContext 一路带下去；没权限的消息直接不进 AI，
+                // 免得既浪费 token 又让玩家以为 AI 在无视自己。
+                boolean serverTools = false;
+                if (ServerToolAccess.matchesPrefix(content)) {
+                    if (!ServerToolAccess.allowed(sender)) {
+                        sender.sendSystemMessage(Component.literal(
+                                "你没有权限使用 AI 的服务器管理工具（前缀 "
+                                        + ServerToolAccess.prefix()
+                                        + " 仅限管理员）。这条消息没有发送给 AI。"));
+                        return;
+                    }
+                    content = ServerToolAccess.stripPrefix(content);
+                    if (content.isEmpty()) {
+                        sender.sendSystemMessage(Component.literal(
+                                "前缀后面要写上你想让 AI 做的事，例如："
+                                        + ServerToolAccess.prefix() + " 看一下 mods 目录"));
+                        return;
+                    }
+                    serverTools = true;
+                }
 
                 AiDispatcher.submit(new ChatContext(
-                        sender.getName().getString(),
+                        playerName,
                         "chat",
                         content,
-                        System.currentTimeMillis()
+                        System.currentTimeMillis(),
+                        serverTools
                 ));
             } finally {
                 LAST_COMMAND_AT.set(0L);

@@ -2,6 +2,7 @@ package com.example.aichat.command;
 
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.memory.MemoryStore;
+import com.example.aichat.servertools.ServerToolAccess;
 import com.example.aichat.state.PlayerMode;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.usage.UsageStore;
@@ -24,6 +25,9 @@ import java.util.function.Predicate;
 public final class AiChatCommand {
     private static final Predicate<CommandSourceStack> ADMIN =
             Commands.hasPermission(Commands.LEVEL_MODERATORS);
+    /** 改管理员名单等于发服务器管理权限，要求 op 满级（4 级）。 */
+    private static final Predicate<CommandSourceStack> OWNER =
+            Commands.hasPermission(Commands.LEVEL_OWNERS);
 
     private AiChatCommand() {
     }
@@ -69,6 +73,23 @@ public final class AiChatCommand {
                         .executes(ctx -> setMode(ctx.getSource(), PlayerMode.OFF)))
                 .then(Commands.literal("onlyread")
                         .executes(ctx -> setMode(ctx.getSource(), PlayerMode.ONLY_READ)))
+                .then(Commands.literal("tools")
+                        .requires(ADMIN)
+                        .executes(ctx -> showTools(ctx.getSource()))
+                        .then(Commands.literal("list")
+                                .executes(ctx -> showTools(ctx.getSource())))
+                        .then(Commands.literal("add")
+                                .requires(OWNER)
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .executes(ctx -> addToolAdmin(
+                                                ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "player")))))
+                        .then(Commands.literal("remove")
+                                .requires(OWNER)
+                                .then(Commands.argument("player", StringArgumentType.word())
+                                        .executes(ctx -> removeToolAdmin(
+                                                ctx.getSource(),
+                                                StringArgumentType.getString(ctx, "player"))))))
                 .then(Commands.literal("reload")
                         .requires(ADMIN)
                         .executes(ctx -> reload(ctx.getSource())))
@@ -105,6 +126,8 @@ public final class AiChatCommand {
                 /aichat enable|disable —— 全局开启/关闭 AI 聊天
                 /aichat debug —— 切换调试模式（聊天框 token 用量 + 日志原始响应）
                 /aichat memory —— 查看记忆文件夹（开关见 config.json 的 memory_enabled）
+                /aichat tools —— 服务器管理工具状态与管理员名单
+                /aichat tools add|remove <玩家> —— 维护名单（仅 op 4 级可用，list 模式生效）
                 /aichat ban <玩家> —— 不再回复该玩家（unban 解除，banlist 查看）""";
         source.sendSuccess(() -> Component.literal(text), false);
         return 1;
@@ -206,6 +229,63 @@ public final class AiChatCommand {
         String message = text.toString();
         source.sendSuccess(() -> Component.literal(message), false);
         return banned.size();
+    }
+
+    /** 服务器管理工具的状态可视：开关、前缀、权限方式、名单，以及“我自己能不能用”。 */
+    private static int showTools(CommandSourceStack source) {
+        List<String> admins = ServerToolAccess.admins();
+        StringBuilder text = new StringBuilder("服务器管理工具：");
+        text.append(ServerToolAccess.enabled()
+                ? "已开启"
+                : "已关闭（config.json 里把 server_tools_enabled 设为 true 后 /aichat reload）");
+        text.append("\n特权前缀：");
+        if (ServerToolAccess.prefix().isEmpty()) {
+            text.append("（空，前缀通道关闭）");
+        } else {
+            text.append('"').append(ServerToolAccess.prefix())
+                    .append("\"（玩家在聊天框里以它开头才会调用工具）");
+        }
+        text.append("\n权限方式：").append(ServerToolAccess.describePermission());
+        text.append("\n管理员名单（list 模式生效，共 ").append(admins.size()).append(" 人）：");
+        if (admins.isEmpty()) {
+            text.append("（空）");
+        } else {
+            for (String admin : admins) {
+                text.append("\n - ").append(admin);
+            }
+        }
+        ServerPlayer player = source.getPlayer();
+        if (player != null) {
+            text.append("\n你的权限：")
+                    .append(ServerToolAccess.allowed(player) ? "可以调用" : "不能调用");
+        }
+        String message = text.toString();
+        source.sendSuccess(() -> Component.literal(message), false);
+        return 1;
+    }
+
+    private static int addToolAdmin(CommandSourceStack source, String playerName) {
+        if (!"list".equals(ServerToolAccess.permissionMode())) {
+            source.sendSuccess(() -> Component.literal(
+                    "当前权限方式是 " + ServerToolAccess.permissionMode()
+                            + "，名单文件不生效。把 config.json 的 server_tools_permission_mode 改成 \"list\" 再 /aichat reload。"),
+                    false);
+        }
+        if (ServerToolAccess.addAdmin(playerName)) {
+            source.sendSuccess(() -> Component.literal("已把 " + playerName + " 加入服务器管理工具名单。"), true);
+        } else {
+            source.sendFailure(Component.literal(playerName + " 已在名单里。"));
+        }
+        return 1;
+    }
+
+    private static int removeToolAdmin(CommandSourceStack source, String playerName) {
+        if (ServerToolAccess.removeAdmin(playerName)) {
+            source.sendSuccess(() -> Component.literal("已把 " + playerName + " 移出服务器管理工具名单。"), true);
+        } else {
+            source.sendFailure(Component.literal(playerName + " 不在名单里。"));
+        }
+        return 1;
     }
 
     private static int showMemory(CommandSourceStack source) {

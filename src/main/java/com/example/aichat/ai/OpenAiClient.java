@@ -43,7 +43,7 @@ public final class OpenAiClient {
     }
 
     public static CompletableFuture<RawResult> ask(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history) {
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
         JsonArray messages = new JsonArray();
         messages.add(msg("system", profile.systemPrompt()));
         for (ConversationTurn turn : history) {
@@ -53,8 +53,9 @@ public final class OpenAiClient {
         }
         messages.add(msg("user", userText(profile, userMessage)));
 
-        List<Tool> tools = Tools.active(profile.toolsEnabled(), profile.memoryEnabled());
-        return toolRound(profile, messages, 1, TokenUsage.ZERO, tools, new ToolRun());
+        List<Tool> tools = Tools.active(
+                profile.toolsEnabled(), profile.memoryEnabled(), run != null && run.serverToolsAllowed());
+        return toolRound(profile, messages, 1, TokenUsage.ZERO, tools, run == null ? new ToolRun() : run);
     }
 
     /**

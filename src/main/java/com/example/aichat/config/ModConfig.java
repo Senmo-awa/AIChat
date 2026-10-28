@@ -28,9 +28,10 @@ package com.example.aichat.config;
  * memory_enabled: 是否开启记忆功能（AI 可读写记忆文件），默认 true
  * memory_dir: 记忆文件夹名（相对于 config/aichat/）
  * memory_max_file_kb: 单个记忆文件上限（KB），超限由 AI 自行压缩
+ * server_tools_*: 服务器根目录文件管理工具（默认关闭，只有带前缀的特权消息才能调用）
  */
 public class ModConfig {
-    public int config_version = 3;
+    public int config_version = 6;
     public String api_url = "https://api.deepseek.com/chat/completions";
     public String api_key = "";
     public String model = "deepseek-flash";
@@ -93,4 +94,37 @@ public class ModConfig {
      * system 时可以设为 false，省一份重复的提示词 token。
      */
     public boolean system_prompt_in_user = true;
+
+    // ---------------- 服务器根目录文件管理工具（2.0.0 新增） ----------------
+
+    /**
+     * 总开关，默认 false。开启后，聊天消息以 server_tools_prefix 开头的特权请求才允许调用
+     * server_files 工具；普通聊天一律不注册该工具，模型即使硬编出名字也只会收到「未知工具」。
+     */
+    public boolean server_tools_enabled = false;
+    /** 特权请求前缀。留空表示关闭前缀通道（工具永远不可用）。 */
+    public String server_tools_prefix = "!+";
+    /** 权限判定方式：op（原版权限等级）/ list（管理员名单文件）/ luckperms（权限节点）。 */
+    public String server_tools_permission_mode = "op";
+    /** op 模式下要求的原版权限等级：1/2/3/4，默认 4。 */
+    public int server_tools_permission_level = 4;
+    /** luckperms 模式下检查的权限节点。 */
+    public String server_tools_luckperms_node = "aichat.servertools";
+    /** list 模式的管理员名单文件（相对 config/aichat/）。 */
+    public String server_tools_admins_file = "server_admins.json";
+    /** 单次读取文件的字节上限（KB）。 */
+    public int server_tools_read_max_kb = 48;
+    /** 单次写入文件的字节上限（KB）。 */
+    public int server_tools_write_max_kb = 64;
+    /** 列目录返回的最大条目数。 */
+    public int server_tools_list_max_entries = 200;
+    /** 删除时是否移入 .aichat-trash/<时间戳>/ 回收目录。 */
+    public boolean server_tools_trash_enabled = true;
+    /** 禁止读写的路径（相对服务器根目录，目录连带其下所有内容）。 */
+    public String[] server_tools_deny_paths = {
+            "config/aichat/config.json",
+            "config/aichat/system.json",
+            "config/aichat/server_admins.json",
+            ".aichat-trash"
+    };
 }
