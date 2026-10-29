@@ -47,8 +47,13 @@ public final class AnthropicClient {
     private AnthropicClient() {
     }
 
+    /**
+     * @param allowProseRepair 是否允许「纯文本脱轨修复」：true 用于要发出去的回复（单模型 / 双模型的 reply 阶段）；
+     *                         false 用于判断模型——judge 只该回答 reply/ignore，把它的自然语言当回复会用错。
+     */
     public static CompletableFuture<RawResult> ask(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run,
+            boolean allowProseRepair) {
         JsonArray messages = new JsonArray();
         for (ConversationTurn turn : history) {
             addMessage(messages, turn.role(), turn.content());
@@ -58,7 +63,7 @@ public final class AnthropicClient {
         List<Tool> tools = Tools.active(
                 profile.toolsEnabled(), profile.memoryEnabled(), run != null && run.serverToolsAllowed());
         return toolRound(profile, messages, 1, TokenUsage.ZERO,
-                tools, run == null ? new ToolRun() : run, false);
+                tools, run == null ? new ToolRun() : run, false, allowProseRepair);
     }
 
     /**
@@ -71,7 +76,7 @@ public final class AnthropicClient {
      */
     private static CompletableFuture<RawResult> toolRound(
             ApiProfile profile, JsonArray messages, int round, TokenUsage used,
-            List<Tool> tools, ToolRun run, boolean usedTools) {
+            List<Tool> tools, ToolRun run, boolean usedTools, boolean allowProseRepair) {
         boolean exhausted = round > MAX_TOOL_ROUNDS;
         boolean stripTools = round > MAX_TOOL_ROUNDS + 1;
         if (exhausted) {
@@ -90,7 +95,8 @@ public final class AnthropicClient {
             JsonArray toolUses = findToolUses(response);
             if (toolUses.isEmpty()) {
                 String content = extractText(response);
-                if (usedTools && Fallbacks.replyJsonFromProse(content) != null) {
+                // 不限定 usedTools：不调工具的普通聊天同样会脱轨
+                if (allowProseRepair && Fallbacks.replyJsonFromProse(content) != null) {
                     return repairRound(profile, messages, content, usage, tools);
                 }
                 return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
@@ -100,7 +106,8 @@ public final class AnthropicClient {
                 return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
             }
             if (exhausted) {
-                return toolRound(profile, messages, round + 1, usage, tools, run, usedTools);
+                return toolRound(profile, messages, round + 1, usage, tools, run, usedTools,
+                        allowProseRepair);
             }
 
             // assistant 的 content 原样回传（可能含 thinking 与 tool_use block）
@@ -136,7 +143,8 @@ public final class AnthropicClient {
             user.add("content", resultBlocks);
             messages.add(user);
 
-            return toolRound(profile, messages, round + 1, usage, tools, run, true);
+            return toolRound(profile, messages, round + 1, usage, tools, run, true,
+                    allowProseRepair);
         });
     }
 

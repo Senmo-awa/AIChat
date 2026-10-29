@@ -30,7 +30,7 @@ public final class AiClient {
         ToolRun run = new ToolRun(ctx.playerName(), ctx.serverTools());
 
         if (!ConfigManager.isDualModelEnabled()) {
-            return dispatch(ConfigManager.singleProfile(), userMessage, history, run)
+            return dispatch(ConfigManager.singleProfile(), userMessage, history, run, true)
                     .thenApply(raw -> {
                         warnIfPrivilegedWithoutTools(ctx, run);
                         return parseReply(raw.text(), raw.usage());
@@ -41,7 +41,8 @@ public final class AiClient {
         // 只给当前事件会让 judge 变成盲判，和单模型模式的表现不一致。
         ApiProfile judgeProfile = ConfigManager.judgeProfile();
         // 判断模型永远不给工具：它只输出一行 JSON，给它工具只会浪费 token
-        return dispatch(judgeProfile, userMessage, history, new ToolRun(ctx.playerName(), false))
+        // 也不允许「纯文本脱轨修复」：judge 的自然语言被判成 reply=true 会直接乱说话
+        return dispatch(judgeProfile, userMessage, history, new ToolRun(ctx.playerName(), false), false)
                 .thenCompose(judgeRaw -> {
             TokenUsage judgeUsage = judgeRaw.usage();
             boolean shouldReply = judgeSaysReply(judgeRaw.text());
@@ -54,7 +55,7 @@ public final class AiClient {
             }
 
             ApiProfile replyProfile = ConfigManager.replyProfile();
-            return dispatch(replyProfile, userMessage, history, run).thenApply(replyRaw -> {
+            return dispatch(replyProfile, userMessage, history, run, true).thenApply(replyRaw -> {
                 warnIfPrivilegedWithoutTools(ctx, run);
                 AiResult reply = parseReplyContent(replyRaw.text(), replyRaw.usage());
                 return new AiResult(
@@ -84,11 +85,12 @@ public final class AiClient {
     }
 
     private static CompletableFuture<RawResult> dispatch(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run,
+            boolean allowProseRepair) {
         if ("anthropic".equals(Endpoints.resolveType(profile.apiType(), profile.apiUrl()))) {
-            return AnthropicClient.ask(profile, userMessage, history, run);
+            return AnthropicClient.ask(profile, userMessage, history, run, allowProseRepair);
         }
-        return OpenAiClient.ask(profile, userMessage, history, run);
+        return OpenAiClient.ask(profile, userMessage, history, run, allowProseRepair);
     }
 
     private static final int LOG_PREVIEW_LENGTH = 200;

@@ -47,8 +47,13 @@ public final class OpenAiClient {
     private OpenAiClient() {
     }
 
+    /**
+     * @param allowProseRepair 是否允许「纯文本脱轨修复」：true 用于要发出去的回复（单模型 / 双模型的 reply 阶段）；
+     *                         false 用于判断模型——judge 只该回答 reply/ignore，把它的自然语言当回复会用错。
+     */
     public static CompletableFuture<RawResult> ask(
-            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run) {
+            ApiProfile profile, String userMessage, List<ConversationTurn> history, ToolRun run,
+            boolean allowProseRepair) {
         JsonArray messages = new JsonArray();
         messages.add(msg("system", profile.systemPrompt()));
         for (ConversationTurn turn : history) {
@@ -61,7 +66,7 @@ public final class OpenAiClient {
         List<Tool> tools = Tools.active(
                 profile.toolsEnabled(), profile.memoryEnabled(), run != null && run.serverToolsAllowed());
         return toolRound(profile, messages, 1, TokenUsage.ZERO,
-                tools, run == null ? new ToolRun() : run, false);
+                tools, run == null ? new ToolRun() : run, false, allowProseRepair);
     }
 
     /**
@@ -84,7 +89,7 @@ public final class OpenAiClient {
      */
     private static CompletableFuture<RawResult> toolRound(
             ApiProfile profile, JsonArray messages, int round, TokenUsage used,
-            List<Tool> tools, ToolRun run, boolean usedTools) {
+            List<Tool> tools, ToolRun run, boolean usedTools, boolean allowProseRepair) {
         // 轮次用尽后不再直接抽掉 tools：实测抽掉之后模型会把工具调用写成私有标记
         // （DeepSeek 的 <｜｜DSML｜｜ calls>），模组解析不了只能丢弃，玩家端就是「AI 不说话」。
         // 所以先用「保留工具声明 + 明确要求收尾」温柔收一次，再不行才真正回收工具。
@@ -110,8 +115,9 @@ public final class OpenAiClient {
                     && !toolCalls.getAsJsonArray().isEmpty();
             if (!hasToolCalls) {
                 String content = contentOf(message);
-                // 工具链之后改回自然语言（JSON 契约脱轨）：先补一次「改写」请求，仍不听话才兜底原文
-                if (usedTools && Fallbacks.replyJsonFromProse(content) != null) {
+                // 模型把最终回答写成自然语言（JSON 契约脱轨）：先补一次「改写」请求，仍不听话才兜底原文。
+                // 不限定 usedTools —— 实测不调工具的普通聊天也会脱轨（22:25 那次一次工具都没调）。
+                if (allowProseRepair && Fallbacks.replyJsonFromProse(content) != null) {
                     return repairRound(profile, messages, content, usage, tools);
                 }
                 return CompletableFuture.completedFuture(finalResult(message, usage, usedTools));
@@ -123,7 +129,8 @@ public final class OpenAiClient {
             if (exhausted) {
                 // 收尾指令被无视，仍要调工具：追加的 user 提示已经写进 messages，
                 // 直接进下一轮（下一轮会回收工具），不把这条 tool_calls 消息并进历史。
-                return toolRound(profile, messages, round + 1, usage, tools, run, usedTools);
+                return toolRound(profile, messages, round + 1, usage, tools, run, usedTools,
+                        allowProseRepair);
             }
 
             messages.add(message);
@@ -146,7 +153,8 @@ public final class OpenAiClient {
             // 每轮回灌后钉一次格式契约：长工具链之后小模型极易脱轨成自然语言
             messages.add(msg("user", Fallbacks.TOOL_FOLLOWUP_REMINDER));
 
-            return toolRound(profile, messages, round + 1, usage, tools, run, true);
+            return toolRound(profile, messages, round + 1, usage, tools, run, true,
+                    allowProseRepair);
         });
     }
 
