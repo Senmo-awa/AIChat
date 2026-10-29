@@ -109,6 +109,11 @@ public final class OpenAiClient {
             boolean hasToolCalls = toolCalls != null && toolCalls.isJsonArray()
                     && !toolCalls.getAsJsonArray().isEmpty();
             if (!hasToolCalls) {
+                String content = contentOf(message);
+                // 工具链之后改回自然语言（JSON 契约脱轨）：先补一次「改写」请求，仍不听话才兜底原文
+                if (usedTools && Fallbacks.replyJsonFromProse(content) != null) {
+                    return repairRound(profile, messages, content, usage, tools);
+                }
                 return CompletableFuture.completedFuture(finalResult(message, usage, usedTools));
             }
             if (stripTools) {
@@ -138,14 +143,59 @@ public final class OpenAiClient {
                 messages.add(toolMsg);
             }
 
+            // 每轮回灌后钉一次格式契约：长工具链之后小模型极易脱轨成自然语言
+            messages.add(msg("user", Fallbacks.TOOL_FOLLOWUP_REMINDER));
+
             return toolRound(profile, messages, round + 1, usage, tools, run, true);
         });
     }
 
     /**
+     * 脱轨修复轮：模型把最终回答写成了自然语言而不是 JSON。
+     * 原样带上它那句话，再要求改写成 JSON；工具声明保留着（抽掉工具反而会让它写私有标记）。
+     * 修复只做一次——仍不听话就用原文兜底，绝不在这里无限续命。
+     */
+    private static CompletableFuture<RawResult> repairRound(
+            ApiProfile profile, JsonArray messages, String prose, TokenUsage usage, List<Tool> tools) {
+        AiChatMod.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），补发一次改写请求：{}",
+                prose.length(), ConsoleSafe.escape(prosePreview(prose)));
+
+        JsonObject assistant = new JsonObject();
+        assistant.addProperty("role", "assistant");
+        assistant.addProperty("content", prose);
+        messages.add(assistant);
+        messages.add(msg("user", Fallbacks.JSON_REPAIR_REMINDER));
+
+        JsonObject body = baseBody(profile, tools);
+        body.add("messages", messages);
+        return sendWithRetry(profile, body).thenApply(attempts -> {
+            TokenUsage total = usage.plus(totalUsage(attempts));
+            JsonObject message = firstMessage(attempts.get(attempts.size() - 1));
+            JsonElement toolCalls = message.get("tool_calls");
+            boolean hasToolCalls = toolCalls != null && toolCalls.isJsonArray()
+                    && !toolCalls.getAsJsonArray().isEmpty();
+            String repaired = contentOf(message);
+            if (!hasToolCalls && Fallbacks.isJsonObject(repaired)) {
+                AiChatMod.LOGGER.info("改写请求成功，本轮按改写后的 JSON 回复");
+                return new RawResult(repaired, total);
+            }
+            AiChatMod.LOGGER.warn("改写请求仍没给出 JSON（{}），本轮按原文兜底",
+                    hasToolCalls ? "又返回了 tool_calls" : "仍然是纯文本");
+            return fallbackFromProse(prose, total);
+        });
+    }
+
+    /** 原文兜底：把模型那句自然语言包成合法回复；连这句都不可用才退回 fallback_reply。 */
+    private static RawResult fallbackFromProse(String prose, TokenUsage usage) {
+        String salvaged = Fallbacks.replyJsonFromProse(prose);
+        return new RawResult(salvaged != null ? salvaged : Fallbacks.replyJsonOrNull(), usage);
+    }
+
+    /**
      * 收尾：把模型最后一条消息转成最终结果。
-     * 用过工具却没拿到可用 JSON（空内容 / 私有工具标记）时，改用配置里的兜底话术，
-     * 避免玩家端完全没反馈。
+     * 用过工具却没拿到可用 JSON（空内容 / 私有工具标记）时，改用配置里的兜底话术；
+     * 拿到的是「纯自然语言」（有内容但不是 JSON）时，把原文包成合法回复救回来——
+     * 这条路径以前会一路走到 AiClient 的「不是合法 JSON，已忽略」，玩家端就一个字都收不到。
      */
     private static RawResult finalResult(JsonObject message, TokenUsage usage, boolean usedTools) {
         String content = contentOf(message);
@@ -160,8 +210,20 @@ public final class OpenAiClient {
             }
             AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），且未配置 fallback_reply，本次按不回复处理",
                     empty ? "content 为空" : "输出了工具调用标记");
+        } else if (usedTools) {
+            String salvaged = Fallbacks.replyJsonFromProse(content);
+            if (salvaged != null) {
+                AiChatMod.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），已把原文当作回复兜底：{}",
+                        content.length(), ConsoleSafe.escape(prosePreview(content)));
+                return new RawResult(salvaged, usage);
+            }
         }
         return new RawResult(content, usage);
+    }
+
+    private static String prosePreview(String content) {
+        String flat = content.replace("\r", " ").replace("\n", " ").trim();
+        return flat.length() <= 120 ? flat : flat.substring(0, 120) + "…";
     }
 
     private static String functionName(JsonObject toolCall) {

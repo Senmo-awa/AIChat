@@ -89,6 +89,10 @@ public final class AnthropicClient {
             TokenUsage usage = used.plus(parseUsage(response));
             JsonArray toolUses = findToolUses(response);
             if (toolUses.isEmpty()) {
+                String content = extractText(response);
+                if (usedTools && Fallbacks.replyJsonFromProse(content) != null) {
+                    return repairRound(profile, messages, content, usage, tools);
+                }
                 return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
             }
             if (stripTools) {
@@ -121,6 +125,12 @@ public final class AnthropicClient {
                 resultBlocks.add(toolResult);
             }
 
+            // tool_result block 必须在前面，提醒文本作为同一条 user 消息的最后一个 block
+            JsonObject reminder = new JsonObject();
+            reminder.addProperty("type", "text");
+            reminder.addProperty("text", Fallbacks.TOOL_FOLLOWUP_REMINDER);
+            resultBlocks.add(reminder);
+
             JsonObject user = new JsonObject();
             user.addProperty("role", "user");
             user.add("content", resultBlocks);
@@ -143,8 +153,42 @@ public final class AnthropicClient {
     }
 
     /**
+     * 脱轨修复轮：模型把最终回答写成了自然语言而不是 JSON。
+     * 原样带上它那句话，再要求改写成 JSON；工具声明保留着（抽掉工具反而会让它写私有标记）。
+     * 修复只做一次——仍不听话就用原文兜底。
+     */
+    private static CompletableFuture<RawResult> repairRound(
+            ApiProfile profile, JsonArray messages, String prose, TokenUsage usage, List<Tool> tools) {
+        AiChatMod.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），补发一次改写请求：{}",
+                prose.length(), ConsoleSafe.escape(prosePreview(prose)));
+
+        addMessage(messages, "assistant", prose);
+        addMessage(messages, "user", Fallbacks.JSON_REPAIR_REMINDER);
+
+        JsonObject body = baseBody(profile, tools);
+        body.add("messages", messages);
+        return sendWithRetry(profile, body).thenApply(response -> {
+            TokenUsage total = usage.plus(parseUsage(response));
+            String repaired = extractText(response);
+            if (findToolUses(response).isEmpty() && Fallbacks.isJsonObject(repaired)) {
+                AiChatMod.LOGGER.info("改写请求成功，本轮按改写后的 JSON 回复");
+                return new RawResult(repaired, total);
+            }
+            AiChatMod.LOGGER.warn("改写请求仍没给出 JSON，本轮按原文兜底");
+            return fallbackFromProse(prose, total);
+        });
+    }
+
+    /** 原文兜底：把模型那句自然语言包成合法回复；连这句都不可用才退回 fallback_reply。 */
+    private static RawResult fallbackFromProse(String prose, TokenUsage usage) {
+        String salvaged = Fallbacks.replyJsonFromProse(prose);
+        return new RawResult(salvaged != null ? salvaged : Fallbacks.replyJsonOrNull(), usage);
+    }
+
+    /**
      * 收尾：把模型最后一条消息转成最终结果。
-     * 用过工具却没拿到可用 JSON（空内容 / 私有工具标记）时用兜底话术，避免玩家端完全没反馈。
+     * 用过工具却没拿到可用 JSON（空内容 / 私有工具标记）时用兜底话术；
+     * 拿到的是「纯自然语言」时把原文包成合法回复救回来（以前会一路走到「不是合法 JSON，已忽略」）。
      */
     private static RawResult finalResult(JsonObject response, TokenUsage usage, boolean usedTools) {
         String content = extractText(response);
@@ -159,8 +203,20 @@ public final class AnthropicClient {
             }
             AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），且未配置 fallback_reply，本次按不回复处理",
                     empty ? "content 为空" : "输出了工具调用标记");
+        } else if (usedTools) {
+            String salvaged = Fallbacks.replyJsonFromProse(content);
+            if (salvaged != null) {
+                AiChatMod.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），已把原文当作回复兜底：{}",
+                        content.length(), ConsoleSafe.escape(prosePreview(content)));
+                return new RawResult(salvaged, usage);
+            }
         }
         return new RawResult(content, usage);
+    }
+
+    private static String prosePreview(String content) {
+        String flat = content.replace("\r", " ").replace("\n", " ").trim();
+        return flat.length() <= 120 ? flat : flat.substring(0, 120) + "…";
     }
 
     /**
