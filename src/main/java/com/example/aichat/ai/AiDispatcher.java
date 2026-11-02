@@ -2,8 +2,10 @@ package com.example.aichat.ai;
 
 import com.example.aichat.AiChatMod;
 import com.example.aichat.config.ConfigManager;
+import com.example.aichat.guard.Guards;
 import com.example.aichat.state.StateManager;
 import com.example.aichat.text.ConsoleSafe;
+import com.example.aichat.text.SecretRedactor;
 import com.example.aichat.usage.TokenUsage;
 import com.example.aichat.usage.UsageStore;
 import com.google.gson.Gson;
@@ -62,6 +64,33 @@ public final class AiDispatcher {
     public static void submit(ChatContext ctx) {
         // 服务器正在关闭：玩家会成批被踢下线，quit 事件一条都不该再进 AI
         if (SHUTTING_DOWN.get()) {
+            return;
+        }
+        // 指令类消息（默认 !! 开头，MCDR / 指令插件的调用前缀）不送 AI：
+        // 即便将来多出新的入口调到这里也不会漏过滤。特权请求不参与这个判定——
+        // 它的 !+ 前缀已经被剥掉，内容是管理员明确要让 AI 处理的。
+        if (!ctx.serverTools() && ConfigManager.isIgnoredChat(ctx.content())) {
+            return;
+        }
+        // 下面三道节流都只在「聊天」上生效（join/quit 是事件，不该被点名/冷却挡住），
+        // 而且都在进缓冲区之前——命中就完全不花 token。
+        if (!ctx.serverTools() && "chat".equals(ctx.eventType())) {
+            if (!Guards.mentioned(ctx.content())) {
+                if (StateManager.isDebug()) {
+                    AiChatMod.LOGGER.info("[debug] 没被点名（被动回复），忽略：{}", ctx.content());
+                }
+                return;
+            }
+            if (Guards.onCooldown(ctx.playerName())) {
+                if (StateManager.isDebug()) {
+                    AiChatMod.LOGGER.info("[debug] 玩家冷却中，忽略：{}（间隔 {} 秒）",
+                            ctx.playerName(), ConfigManager.get().player_cooldown_seconds);
+                }
+                return;
+            }
+        }
+        // 每日预算用尽：连 join/quit 一起停，跨天自动恢复（Guards 内每小时最多告警一次）
+        if (Guards.overDailyBudget()) {
             return;
         }
         if (!StateManager.canReplyTo(ctx.playerName())) {
@@ -193,14 +222,22 @@ public final class AiDispatcher {
                     UsageStore.record(batch.playerName(), ConfigManager.usageModelName(), usage);
                 }
 
+                // 出口脱敏：AI 从文件里读到的密码 / Key 不广播出去（默认开）。
+                // 连日志也抹——控制台日志常被 MCDR 转到公开频道。
+                String replyContent = result.content() == null
+                        ? null
+                        : (ConfigManager.get().redact_secrets
+                                ? SecretRedactor.apply(result.content())
+                                : result.content());
+
                 if (StateManager.isDebug()) {
                     AiChatMod.LOGGER.info(
                             "[debug] 解析结果：reply={}，content={}（事件：{}，消息数：{}，历史条数：{}）",
-                            result.reply(), ConsoleSafe.escape(result.content()),
+                            result.reply(), ConsoleSafe.escape(replyContent),
                             batch.eventType(), events.size(), history.size());
                 }
 
-                if (!result.reply() || result.content() == null) {
+                if (!result.reply() || replyContent == null) {
                     return;
                 }
 
@@ -209,7 +246,7 @@ public final class AiDispatcher {
                 if (!ConfigManager.isDualModelEnabled()) {
                     historyReply.addProperty("action", "reply");
                 }
-                historyReply.addProperty("content", result.content());
+                historyReply.addProperty("content", replyContent);
                 appendHistory("assistant", GSON.toJson(historyReply));
 
                 MinecraftServer server = currentServer;
@@ -220,7 +257,7 @@ public final class AiDispatcher {
                 if (prefix == null) {
                     prefix = "[AI] ";
                 }
-                String line = prefix + result.content();
+                String line = prefix + replyContent;
                 TokenUsage finalUsage = usage;
                 server.execute(() -> broadcast(server, line, finalUsage));
             } catch (java.util.concurrent.CancellationException e) {
@@ -297,6 +334,20 @@ public final class AiDispatcher {
     /** 服务器正在关闭：不再接受事件、不再广播。 */
     public static boolean isShuttingDown() {
         return SHUTTING_DOWN.get();
+    }
+
+    /** 缓冲区里还没发出去的事件数（/aichat status 用）。 */
+    public static int pendingEvents() {
+        synchronized (BUFFER_LOCK) {
+            return BUFFER.size();
+        }
+    }
+
+    /** 当前历史上下文条数（/aichat status 用）。 */
+    public static int historySize() {
+        synchronized (RECENT) {
+            return RECENT.size();
+        }
     }
 
     /**

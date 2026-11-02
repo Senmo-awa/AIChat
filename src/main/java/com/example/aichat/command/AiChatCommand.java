@@ -1,6 +1,9 @@
 package com.example.aichat.command;
 
+import com.example.aichat.ai.AiDispatcher;
 import com.example.aichat.config.ConfigManager;
+import com.example.aichat.config.ModConfig;
+import com.example.aichat.guard.Guards;
 import com.example.aichat.memory.MemoryStore;
 import com.example.aichat.servertools.ServerToolAccess;
 import com.example.aichat.state.PlayerMode;
@@ -90,6 +93,9 @@ public final class AiChatCommand {
                                         .executes(ctx -> removeToolAdmin(
                                                 ctx.getSource(),
                                                 StringArgumentType.getString(ctx, "player"))))))
+                .then(Commands.literal("status")
+                        .requires(ADMIN)
+                        .executes(ctx -> showStatus(ctx.getSource())))
                 .then(Commands.literal("reload")
                         .requires(ADMIN)
                         .executes(ctx -> reload(ctx.getSource())))
@@ -103,7 +109,57 @@ public final class AiChatCommand {
             source.sendFailure(Component.literal("AI Chat 配置加载失败：" + e.getMessage()));
             return 0;
         }
+        // 配置换了，旧的冷却计时不该继续压着玩家
+        Guards.resetCooldowns();
         source.sendSuccess(() -> Component.literal("AI Chat 配置已重新加载。"), true);
+        return 1;
+    }
+
+    /**
+     * /aichat status：一屏看清「现在到底什么在生效」。
+     * 排查「配置写了没生效」比发消息试探快，也顺手能看到今日花了多少 token。
+     */
+    private static int showStatus(CommandSourceStack source) {
+        ModConfig config = ConfigManager.get();
+        if (config == null) {
+            source.sendFailure(Component.literal("AI Chat 配置未加载。"));
+            return 0;
+        }
+        long today = UsageStore.todayTotal();
+        String budget = config.daily_token_budget <= 0 ? "不限" : String.valueOf(config.daily_token_budget);
+        String remain = config.daily_token_budget <= 0
+                ? "不限"
+                : String.valueOf(Math.max(0L, config.daily_token_budget - today));
+        int requests = UsageStore.lastDays(1).stream().mapToInt(UsageStore.DailyUsage::requests).sum();
+        String cooldown = config.player_cooldown_seconds <= 0
+                ? "关"
+                : config.player_cooldown_seconds + " 秒";
+        String mention = config.reply_only_when_mentioned
+                ? "开（点名：" + config.mention_names + "）"
+                : "关";
+        String prefixes = config.ignored_chat_prefixes == null || config.ignored_chat_prefixes.isEmpty()
+                ? "[]"
+                : config.ignored_chat_prefixes.toString();
+
+        source.sendSuccess(() -> Component.literal("—— AI Chat 状态 ——"), false);
+        source.sendSuccess(() -> Component.literal(
+                "回复：" + (StateManager.isChatEnabled() ? "开" : "关")
+                        + "｜debug：" + (StateManager.isDebug() ? "开" : "关")
+                        + "｜历史：" + AiDispatcher.historySize() + " 条"
+                        + "｜缓冲待发：" + AiDispatcher.pendingEvents() + " 条"), false);
+        source.sendSuccess(() -> Component.literal(
+                "模型：" + config.model
+                        + "｜协议：" + config.api_type
+                        + "｜双模型：" + (ConfigManager.isDualModelEnabled() ? "开" : "关")
+                        + "｜工具：" + (config.enable_tools ? "开" : "关")), false);
+        source.sendSuccess(() -> Component.literal(
+                "今日 token：" + today + " / 预算 " + budget + "（剩 " + remain + "）"
+                        + "｜今日请求 " + requests + " 次"), false);
+        source.sendSuccess(() -> Component.literal(
+                "冷却：" + cooldown
+                        + "｜被动回复：" + mention
+                        + "｜忽略前缀：" + prefixes
+                        + "｜密钥脱敏：" + (config.redact_secrets ? "开" : "关")), false);
         return 1;
     }
 

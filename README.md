@@ -239,6 +239,8 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 
 被 ban、`off`、`onlyread` 的玩家事件在进入缓冲前就被拦截。
 
+**指令类消息不进缓冲、也不送 AI**：以 `ignored_chat_prefixes`（默认 `["!!"]`）开头的聊天消息在入口就被丢弃——`!!` 是 MCDR / 指令插件的调用前缀，当聊天丢给模型只会白烧 token。日志（需 debug）：`[debug] 忽略指令类消息，未提交给 AI：!!ledger size`。想连 `!` 一起忽略就改配置成 `["!!", "!"]`；写成 `[]` 回到旧行为。
+
 排查时可看的日志：
 
 ```
@@ -392,8 +394,25 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 | `buffer_delay_seconds` | `5` | 最后一条消息后等待秒数 |
 | `buffer_max_messages` | `10` | 缓冲区最多条数，满了立即发送 |
 | `buffer_max_chars` | `500` | 缓冲区最多字符数，满了立即发送 |
+| `ignored_chat_prefixes` | `["!!"]` | 以这些前缀开头的聊天消息不送 AI（默认忽略 MCDR 的 `!!` 指令）；`[]` = 不忽略 |
 
-### 8.7 服务器管理工具
+### 8.7 省钱与节流
+
+| 字段 | 默认 | 说明 |
+|---|---|---|
+| `player_cooldown_seconds` | `0`（关） | 同一玩家两条消息的最小间隔；冷却期内的消息直接丢弃（不进缓冲、不发请求） |
+| `daily_token_budget` | `0`（不限） | 每天可用 token 上限；用尽后暂停一切请求（含 join/quit），跨天自动恢复 |
+| `reply_only_when_mentioned` | `false` | 被动回复：只在聊天里出现 `mention_names` 任一词时才接话，其余零 token 忽略 |
+| `mention_names` | `["小墨"]` | 点名关键词，大小写不敏感，可带 `@` |
+| `redact_secrets` | `true` | 广播前把 `sk-xxx` / `Bearer xxx` / `password=xxx` 抹成 `***` |
+
+前三道闸都在 `AiDispatcher.submit()` 入口判定，命中即返回：不进缓冲、不进历史、不发 HTTP 请求。
+`/aichat status` 能一屏看到今日 token、预算余量、冷却与被动回复是否生效、忽略前缀和脱敏开关。
+
+> 建议从 `daily_token_budget` 起手：先给个宽松值（比如 200000），跑几天看 `/aichat status` 的实际日均，
+> 再收紧到日均的 1.5 倍左右。
+
+### 8.8 服务器管理工具
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
@@ -422,11 +441,15 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 ]
 ```
 
-### 8.8 版本
+此外还有一份**内置拒绝清单**，改配置也关不掉（要放宽只能改代码）：`server.properties`（里面是 rcon 密码）、
+`ops.json`、`whitelist.json`、`banned-players.json`、`banned-ips.json`、`usercache.json`、
+`config/aichat`（整个配置目录，含 API Key）。
+
+### 8.9 版本
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `config_version` | `7` | 配置版本，模组用它判断是否需要补字段。**不要手动改小**，否则会被当成旧文件重写 |
+| `config_version` | `9` | 配置版本，模组用它判断是否需要补字段。**不要手动改小**，否则会被当成旧文件重写 |
 
 ---
 

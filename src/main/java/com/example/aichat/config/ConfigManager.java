@@ -18,6 +18,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -41,8 +43,8 @@ public final class ConfigManager {
      * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
      */
     private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
-    /** 配置版本：7 = 2.0.1（工具结果总预算 + 失败兜底话术）。 */
-    public static final int CURRENT_CONFIG_VERSION = 7;
+    /** 配置版本：9 = 2.0.2（冷却 / 每日预算 / 被动回复 / 密钥脱敏）。 */
+    public static final int CURRENT_CONFIG_VERSION = 9;
     /** system.json 版本：2 = 带注释的渲染。 */
     public static final int CURRENT_SYSTEM_VERSION = 2;
 
@@ -136,6 +138,8 @@ public final class ConfigManager {
         if (target.buffer_max_chars < 1) {
             target.buffer_max_chars = 500;
         }
+        applyIgnoredPrefixDefaults(target);
+        applyGuardDefaults(target);
         if (target.memory_dir == null || target.memory_dir.isBlank()) {
             target.memory_dir = "memory";
         }
@@ -143,6 +147,73 @@ public final class ConfigManager {
             target.memory_max_file_kb = 8;
         }
         applyServerToolDefaults(target);
+    }
+
+    /**
+     * 忽略前缀的兜底与清洗：null 补默认 {@code ["!!"]}，去掉空白项并 trim。
+     * 注意「空数组」是合法配置（明确表示不忽略任何前缀），这里不会把空数组换成默认值。
+     */
+    private static void applyIgnoredPrefixDefaults(ModConfig target) {
+        if (target.ignored_chat_prefixes == null) {
+            target.ignored_chat_prefixes = new ArrayList<>(List.of("!!"));
+            return;
+        }
+        List<String> cleaned = new ArrayList<>(target.ignored_chat_prefixes.size());
+        for (String prefix : target.ignored_chat_prefixes) {
+            if (prefix != null && !prefix.isBlank()) {
+                cleaned.add(prefix.trim());
+            }
+        }
+        target.ignored_chat_prefixes = cleaned;
+    }
+
+    /**
+     * 省钱 / 防滥用字段的兜底：负数当 0（= 关闭）处理；点名词为 null 或空时回到默认，
+     * 避免「开了被动回复但一个词都没填」把自己变成永远不回话。
+     */
+    private static void applyGuardDefaults(ModConfig target) {
+        if (target.player_cooldown_seconds < 0) {
+            target.player_cooldown_seconds = 0;
+        }
+        if (target.daily_token_budget < 0) {
+            target.daily_token_budget = 0;
+        }
+        if (target.mention_names == null || target.mention_names.isEmpty()) {
+            target.mention_names = new ArrayList<>(List.of("小墨"));
+            return;
+        }
+        List<String> cleaned = new ArrayList<>(target.mention_names.size());
+        for (String name : target.mention_names) {
+            if (name != null && !name.isBlank()) {
+                cleaned.add(name.trim());
+            }
+        }
+        target.mention_names = cleaned.isEmpty()
+                ? new ArrayList<>(List.of("小墨"))
+                : cleaned;
+    }
+
+    /**
+     * 这条聊天内容是否属于「不送给 AI」的指令类消息。
+     * <p>
+     * 判定在进入缓冲区之前完成：命中前缀的消息既不进缓冲、也不进历史上下文，连请求都不会发。
+     * 前导空格会被忽略（{@code "  !!ledger"} 同样算指令）。
+     */
+    public static boolean isIgnoredChat(String content) {
+        if (content == null || content.isEmpty()) {
+            return false;
+        }
+        ModConfig current = config;
+        if (current == null || current.ignored_chat_prefixes == null) {
+            return false;
+        }
+        String trimmed = content.stripLeading();
+        for (String prefix : current.ignored_chat_prefixes) {
+            if (prefix != null && !prefix.isEmpty() && trimmed.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private static void applyServerToolDefaults(ModConfig target) {

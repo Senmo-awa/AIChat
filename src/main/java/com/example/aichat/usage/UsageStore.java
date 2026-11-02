@@ -32,6 +32,10 @@ public final class UsageStore {
     private static final Gson GSON = new Gson();
     private static final Object LOCK = new Object();
     private static Path file;
+    /** 今日累计的缓存（避免每条聊天都读一遍 usage.jsonl）；record / clear 时置 -1 失效。 */
+    private static volatile long todayCacheTotal = -1L;
+    private static volatile long todayCacheAt;
+    private static final long TODAY_CACHE_MS = 30_000L;
 
     private UsageStore() {
     }
@@ -44,6 +48,7 @@ public final class UsageStore {
         if (usage == null || usage.total() <= 0) {
             return;
         }
+        todayCacheTotal = -1L;
         synchronized (LOCK) {
             try {
                 Path path = file;
@@ -72,9 +77,30 @@ public final class UsageStore {
     }
 
     /**
+     * 今日累计 token（按本机时区归日）。用于每日预算判定。
+     * <p>
+     * 30 秒缓存 + 每次写入后失效：聊天密集时不会每条消息都去解析整个 usage.jsonl，
+     * 又能保证预算判断大致跟得上（最多滞后一次请求）。
+     */
+    public static long todayTotal() {
+        long cached = todayCacheTotal;
+        if (cached >= 0 && System.currentTimeMillis() - todayCacheAt < TODAY_CACHE_MS) {
+            return cached;
+        }
+        long total = 0L;
+        for (DailyUsage day : lastDays(1)) {
+            total = day.total();
+        }
+        todayCacheTotal = total;
+        todayCacheAt = System.currentTimeMillis();
+        return total;
+    }
+
+    /**
      * 清空统计：把当前 usage.jsonl 改名备份，后续记录从零开始。
      */
     public static boolean clear() {
+        todayCacheTotal = -1L;
         synchronized (LOCK) {
             Path path = file;
             if (path == null || !Files.exists(path)) {
