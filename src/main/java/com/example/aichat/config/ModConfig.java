@@ -1,5 +1,8 @@
 package com.example.aichat.config;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * 与 config.json 字段一一对应。
  * api_url: 默认 DeepSeek 地址
@@ -24,6 +27,7 @@ package com.example.aichat.config;
  * buffer_delay_seconds: 最后一条消息后等待多少秒再发送
  * buffer_max_messages: 缓冲区最多条数，满了立即发送
  * buffer_max_chars: 缓冲区最多字符数，满了立即发送
+ * ignored_chat_prefixes: 以这些前缀开头的聊天消息不送给 AI（默认 ["!!"]，MCDR 指令）
  * system_prompt_in_user: 把系统提示词一并放进最后一条用户消息，默认 true
  * memory_enabled: 是否开启记忆功能（AI 可读写记忆文件），默认 true
  * memory_dir: 记忆文件夹名（相对于 config/aichat/）
@@ -88,6 +92,13 @@ public class ModConfig {
     public int buffer_max_messages = 10;
     public int buffer_max_chars = 500;
     /**
+     * 忽略前缀：以这些字符串开头的聊天消息不送给 AI，也不进缓冲区和历史上下文。
+     * 默认 {@code ["!!"]}——{@code !!} 是 MCDR / 指令插件的调用前缀，属于指令而不是聊天，
+     * 当成聊天丢给模型只会白烧 token（还常常把模型带回「用户在让我执行指令」的误解）。
+     * 想连 {@code !} 这类前缀一起忽略就自己加进数组；空数组表示不忽略任何前缀。
+     */
+    public List<String> ignored_chat_prefixes = new ArrayList<>(List.of("!!"));
+    /**
      * 是否把系统提示词（含 JSON 格式契约、知识库文件列表、人设）再拼进最后一条用户消息。
      * 部分中转站/兼容端点会把 system 角色整条丢弃，导致模组的提示词从未到达模型，
      * 表现为模型自由发挥、不输出 JSON、瞎猜知识库文件名。默认开启；接口确实支持
@@ -110,6 +121,33 @@ public class ModConfig {
      * 留空表示保持静默（与旧版行为一致）。这条话术会以普通 AI 回复的形式广播。
      */
     public String fallback_reply = "（这轮没理出结果，请再说一次）";
+
+    // ---------------- 省钱与防滥用（2.0.2 新增） ----------------
+
+    /**
+     * 同一玩家两条消息之间的最小间隔（秒）。0 = 关闭（默认）。
+     * 冷却期内的消息直接丢弃：不进缓冲、不进历史、不发请求（日志需 debug）。
+     */
+    public int player_cooldown_seconds = 0;
+    /**
+     * 全局每日 token 上限。0 = 不限（默认）。
+     * 当天累计达到上限后，一切 AI 请求暂停（含 join/quit），跨天自动恢复；
+     * 告警每小时最多一条。统计口径见 {@code UsageStore}。
+     */
+    public int daily_token_budget = 0;
+    /**
+     * 被动回复：只在被点名时才接话，默认 false（所有消息都走原有判断）。
+     * 开启后，聊天内容里没有 {@link #mention_names} 任一词的消息直接忽略（零 token）；
+     * join/quit 在事件里不受影响。
+     */
+    public boolean reply_only_when_mentioned = false;
+    /** 点名关键词（大小写不敏感，可带 @）。默认 {@code ["小墨"]}。 */
+    public List<String> mention_names = new ArrayList<>(List.of("小墨"));
+    /**
+     * 广播前把疑似密钥的内容替换成 {@code ***}，默认开。
+     * 防的是「AI 自己把读到的密码/Key 说出来」，是给 server_files 加的第二道闸。
+     */
+    public boolean redact_secrets = true;
 
     // ---------------- 服务器根目录文件管理工具（2.0.0 新增） ----------------
 

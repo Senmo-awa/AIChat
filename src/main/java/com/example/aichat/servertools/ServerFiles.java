@@ -27,6 +27,8 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>所有路径都相对服务器根目录解析，解析后必须仍然落在根目录内（含符号链接解析后的真实路径）；</li>
  *   <li>{@code server_tools_deny_paths} 里的路径（默认挡住本模组自己的配置，里面有 API Key）读写都拒绝；</li>
+ *   <li>另有内置拒绝清单（{@code server.properties} / {@code ops.json} / {@code config/aichat} 等），
+ *       用户改配置也关不掉；</li>
  *   <li>读取有字节上限、跳过二进制文件；写入有字节上限；</li>
  *   <li>删除默认移入 {@code .aichat-trash/<时间戳>/}，不是直接抹掉。</li>
  * </ul>
@@ -40,6 +42,23 @@ public final class ServerFiles {
     private static final DateTimeFormatter TIME = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm");
     private static final DateTimeFormatter STAMP = DateTimeFormatter.ofPattern("yyyyMMdd-HHmmss");
     private static final Object LOCK = new Object();
+
+    /**
+     * 内置拒绝清单：不看配置，用户把 {@code server_tools_deny_paths} 清空也关不掉。
+     * <p>
+     * 这里的文件都是「读到就等于拿到服务器」的：{@code server.properties} 里有 rcon 密码、
+     * {@code ops.json} / {@code whitelist.json} 是账号与权限、{@code config/aichat}
+     * 整个目录里有 API Key。默认清单可以改，这一份不行（要放宽只能改代码）。
+     */
+    private static final List<String> ALWAYS_DENY = List.of(
+            "server.properties",
+            "ops.json",
+            "whitelist.json",
+            "banned-players.json",
+            "banned-ips.json",
+            "usercache.json",
+            "config/aichat"
+    );
 
     private ServerFiles() {
     }
@@ -338,41 +357,52 @@ public final class ServerFiles {
             target = realTarget;
         }
         if (isDenied(target)) {
-            throw new IOException("该路径被 server_tools_deny_paths 保护，拒绝访问：" + display(target));
+            throw new IOException("该路径被安全策略保护（内置拒绝清单 / server_tools_deny_paths），拒绝访问："
+                    + display(target));
         }
         return target;
     }
 
     /** 是否落在保护名单里（目录保护会连带其下所有内容）。 */
     static boolean isDenied(Path path) {
-        ModConfig config = ConfigManager.get();
-        if (config == null || config.server_tools_deny_paths == null) {
-            return false;
-        }
         Path root = root();
         String relative = relativeKey(path, root);
         if (relative.isEmpty()) {
             return false;
         }
+        for (String raw : ALWAYS_DENY) {
+            if (deniedBy(relative, raw)) {
+                return true;
+            }
+        }
+        ModConfig config = ConfigManager.get();
+        if (config == null || config.server_tools_deny_paths == null) {
+            return false;
+        }
         for (String raw : config.server_tools_deny_paths) {
-            if (raw == null || raw.isBlank()) {
-                continue;
-            }
-            String deny = raw.trim().replace('\\', '/').toLowerCase(Locale.ROOT);
-            while (deny.startsWith("/")) {
-                deny = deny.substring(1);
-            }
-            while (deny.endsWith("/")) {
-                deny = deny.substring(0, deny.length() - 1);
-            }
-            if (deny.isEmpty()) {
-                continue;
-            }
-            if (relative.equals(deny) || relative.startsWith(deny + "/")) {
+            if (deniedBy(relative, raw)) {
                 return true;
             }
         }
         return false;
+    }
+
+    /** 相对路径是否命中某一条拒绝规则（规则可以是文件，也可以是目录）。 */
+    private static boolean deniedBy(String relative, String raw) {
+        if (raw == null || raw.isBlank()) {
+            return false;
+        }
+        String deny = raw.trim().replace('\\', '/').toLowerCase(Locale.ROOT);
+        while (deny.startsWith("/")) {
+            deny = deny.substring(1);
+        }
+        while (deny.endsWith("/")) {
+            deny = deny.substring(0, deny.length() - 1);
+        }
+        if (deny.isEmpty()) {
+            return false;
+        }
+        return relative.equals(deny) || relative.startsWith(deny + "/");
     }
 
     private static String relativeKey(Path path, Path root) {

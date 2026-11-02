@@ -1,6 +1,17 @@
 # Changelog
 
-## 2.0.2 - 2026-10-29
+## 2.0.2 - 2026-11-02
+
+### Added
+
+- **`ignored_chat_prefixes`（默认 `["!!"]`）**：以这些前缀开头的聊天消息不再送给 AI。`!!` 是 MCDR / 指令插件的调用前缀，属于指令而不是聊天——以前每敲一次 `!!ledger size` 都会触发一次完整 AI 请求（白烧 token，还往上下文里塞一条模型看不懂的内容）。现在在 `ChatListener` 里直接丢弃：不进缓冲、不进历史、不发请求；`AiDispatcher.submit()` 另有一道兜底判定（`!+` 特权请求不受影响）。判定忽略前导空格，数组留空则回到旧行为。
+- **玩家冷却 `player_cooldown_seconds`（默认 0 = 关）**：同一玩家两条消息的最小间隔，冷却期内的消息直接丢弃（不进缓冲、不发请求）。防刷屏式提问。
+- **每日预算 `daily_token_budget`（默认 0 = 不限）**：当天累计 token 达到上限后暂停一切 AI 请求（含 join/quit），跨天自动恢复；告警每小时最多一条。统计走 `UsageStore.todayTotal()`（30 秒缓存 + 写入失效），不会每条聊天都读一遍 `usage.jsonl`。
+- **被动回复 `reply_only_when_mentioned`（默认 false）+ `mention_names`（默认 `["小墨"]`）**：开启后，聊天里没有点名词的消息零 token 忽略；join/quit 事件不受影响。点名词留空会回落默认值，避免「开了过滤却永远不回话」。
+- **密钥脱敏 `redact_secrets`（默认开）**：广播前把 `sk-xxx` / `Bearer xxx` / `password=xxx` 替换成 `***`。这是给 `server_files` 加的第二道闸——就算拒绝清单漏了某条路径，AI 读到的凭据也不会被念到公屏。
+- **`/aichat status`**：一屏输出回复/ debug 开关、历史与缓冲条数、模型与协议、双模型、今日 token 与预算余量、冷却/被动回复/忽略前缀/脱敏的生效状态。
+- **`server_files` 内置拒绝清单**（改配置也关不掉）：`server.properties`（rcon 密码）、`ops.json`、`whitelist.json`、`banned-players.json`、`banned-ips.json`、`usercache.json`、`config/aichat`（整个配置目录）。原来只有可配置的 `server_tools_deny_paths`，用户清空数组就等于把密码递给 AI。
+- **启动自检日志**：加载时打印版本、生效的忽略前缀、服务器工具开关与特权前缀、缓冲参数与模型，换完 jar 一眼能看出配置到底有没有生效。
 
 ### Fixed
 
@@ -11,6 +22,12 @@
   - 两种协议（OpenAI 兼容 / Anthropic）同步修改；脱轨时会 WARN 打出原文预览，方便排查。
 - **同一 bug 的另一条路径：压根没调工具的普通聊天也会脱轨**。实测（22:25）模型连一次工具都没调，直接回人话 `哦哦，原来是机器人呀…`，同样被丢弃。所以脱轨修复与原文兜底**不再限定「用过工具」**，普通聊天一并覆盖。
   - 例外：判断模型（双模型模式的 judge）**不允许**这套兜底——judge 只该回答 `reply`/`ignore`，把它的自然语言当成回复会导致乱说话，仍然维持「非法 JSON = 不回复」的原语义。
+
+### Changed
+
+- `config.json` 升到 **v9**（新增 `player_cooldown_seconds` / `daily_token_budget` /
+  `reply_only_when_mentioned` / `mention_names` / `redact_secrets`），旧文件自动备份后补字段；
+  `system.json` 仍是 v2。新增字段全部是「不配就等于旧行为」的开关。
 
 ### 内测关注
 

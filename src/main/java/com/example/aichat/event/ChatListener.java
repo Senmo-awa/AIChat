@@ -1,8 +1,11 @@
 package com.example.aichat.event;
 
+import com.example.aichat.AiChatMod;
 import com.example.aichat.ai.AiDispatcher;
 import com.example.aichat.ai.ChatContext;
+import com.example.aichat.config.ConfigManager;
 import com.example.aichat.servertools.ServerToolAccess;
+import com.example.aichat.state.StateManager;
 import net.fabricmc.fabric.api.message.v1.ServerMessageEvents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.MinecraftServer;
@@ -16,7 +19,8 @@ import net.minecraft.server.permissions.Permissions;
  * <ul>
  *   <li>带特权前缀（默认 {@code !+}）的消息走 {@code ALLOW_CHAT_MESSAGE}：那里可以拦掉广播，
  *       所以「只发给管理员、不广播」的特权请求必须在这个事件里处理，同时也在这里提交给 AI。</li>
- *   <li>普通消息走 {@code CHAT_MESSAGE}，行为与以前一致。</li>
+ *   <li>普通消息走 {@code CHAT_MESSAGE}，行为与以前一致；但以 {@code ignored_chat_prefixes}
+ *       （默认 {@code !!}，MCDR 的调用前缀）开头的指令类消息在这里被直接丢弃，不送 AI。</li>
  * </ul>
  * 特权消息在 CHAT_MESSAGE 里会被直接跳过（前缀判定命中），因此不会重复提交给 AI。
  */
@@ -60,6 +64,14 @@ public final class ChatListener {
                 }
                 // 特权消息已经在 ALLOW_CHAT_MESSAGE 里处理过了（无论是否被拦下）
                 if (ServerToolAccess.matchesPrefix(content)) {
+                    return;
+                }
+                // 指令类消息（默认 !! 开头，MCDR / 指令插件的调用前缀）不是聊天：
+                // 不送给 AI、不进缓冲区、不进历史上下文，连请求都不会发。
+                if (ConfigManager.isIgnoredChat(content)) {
+                    if (StateManager.isDebug()) {
+                        AiChatMod.LOGGER.info("[debug] 忽略指令类消息，未提交给 AI：{}", content);
+                    }
                     return;
                 }
 
