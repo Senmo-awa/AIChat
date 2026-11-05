@@ -51,6 +51,8 @@ public class AiChatMod implements DedicatedServerModInitializer {
         }
         LOGGER.info("忽略前缀: {}（以这些前缀开头的聊天不送 AI；[] = 不忽略）",
                 config.ignored_chat_prefixes == null ? "[]" : config.ignored_chat_prefixes);
+        LOGGER.info("忽略玩家: {}（名字以此开头的玩家，其聊天与进出事件都不送 AI；[] = 不忽略）",
+                config.ignored_player_prefixes == null ? "[]" : config.ignored_player_prefixes);
         LOGGER.info("服务器管理工具: {}，特权前缀: \"{}\"，权限模式: {}",
                 config.server_tools_enabled ? "开" : "关",
                 config.server_tools_prefix,

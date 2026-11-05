@@ -22,12 +22,13 @@ import java.util.List;
  * reasoning_effort: low/medium/high 等；留空则不发送
  * max_output_tokens: 最大输出 token；0 表示不发送（Anthropic 用默认值）
  * thinking_budget_tokens: Anthropic 思考预算
- * config_version: 配置文件版本，用于升级时自动补齐新字段
+ * config_version: 配置文件版本（模组版本号，如 "2.0.3"），用于升级时自动补齐新字段
  * buffer_enabled: 是否启用消息缓冲（防抖合并，省 token）
  * buffer_delay_seconds: 最后一条消息后等待多少秒再发送
  * buffer_max_messages: 缓冲区最多条数，满了立即发送
  * buffer_max_chars: 缓冲区最多字符数，满了立即发送
  * ignored_chat_prefixes: 以这些前缀开头的聊天消息不送给 AI（默认 ["!!"]，MCDR 指令）
+ * ignored_player_prefixes: 名字以这些前缀开头的玩家，其聊天与加入/退出事件不送给 AI（默认 ["bot_"]，假人）
  * system_prompt_in_user: 把系统提示词一并放进最后一条用户消息，默认 true
  * memory_enabled: 是否开启记忆功能（AI 可读写记忆文件），默认 true
  * memory_dir: 记忆文件夹名（相对于 config/aichat/）
@@ -35,7 +36,8 @@ import java.util.List;
  * server_tools_*: 服务器根目录文件管理工具（默认关闭，只有带前缀的特权消息才能调用）
  */
 public class ModConfig {
-    public int config_version = 7;
+    /** 配置文件版本，写的是模组版本号（如 {@code "2.0.3"}）。由 ConfigDoc 渲染写入，这里只为反序列化对齐。 */
+    public String config_version = "";
     public String api_url = "https://api.deepseek.com/chat/completions";
     public String api_key = "";
     public String model = "deepseek-flash";
@@ -98,6 +100,16 @@ public class ModConfig {
      * 想连 {@code !} 这类前缀一起忽略就自己加进数组；空数组表示不忽略任何前缀。
      */
     public List<String> ignored_chat_prefixes = new ArrayList<>(List.of("!!"));
+    /**
+     * 忽略玩家：名字以这些字符串开头的玩家，其聊天与加入/退出事件一律不送给 AI。
+     * <p>
+     * 默认 {@code ["bot_"]}——carpet / 假人（fake player）通常以 {@code bot_} 开头，
+     * 它们进出服和自言自语（自动卖货、挂机测试）会白白吃掉 token，还会污染聊天历史。
+     * 判定是大小写不敏感的 {@code startsWith}，不是正则；空数组表示不忽略任何玩家。
+     * <p>
+     * 与 {@link #ignored_chat_prefixes} 的区别：那个看「消息内容」，这个看「发送者名字」。
+     */
+    public List<String> ignored_player_prefixes = new ArrayList<>(List.of("bot_"));
     /**
      * 是否把系统提示词（含 JSON 格式契约、知识库文件列表、人设）再拼进最后一条用户消息。
      * 部分中转站/兼容端点会把 system 角色整条丢弃，导致模组的提示词从未到达模型，

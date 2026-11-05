@@ -140,6 +140,9 @@ public final class AiChatCommand {
         String prefixes = config.ignored_chat_prefixes == null || config.ignored_chat_prefixes.isEmpty()
                 ? "[]"
                 : config.ignored_chat_prefixes.toString();
+        String ignoredPlayers = config.ignored_player_prefixes == null || config.ignored_player_prefixes.isEmpty()
+                ? "[]"
+                : config.ignored_player_prefixes.toString();
 
         source.sendSuccess(() -> Component.literal("—— AI Chat 状态 ——"), false);
         source.sendSuccess(() -> Component.literal(
@@ -158,8 +161,10 @@ public final class AiChatCommand {
         source.sendSuccess(() -> Component.literal(
                 "冷却：" + cooldown
                         + "｜被动回复：" + mention
-                        + "｜忽略前缀：" + prefixes
                         + "｜密钥脱敏：" + (config.redact_secrets ? "开" : "关")), false);
+        source.sendSuccess(() -> Component.literal(
+                "忽略前缀：" + prefixes
+                        + "｜忽略玩家：" + ignoredPlayers), false);
         return 1;
     }
 

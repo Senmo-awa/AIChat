@@ -62,7 +62,8 @@ public final class ConfigDoc {
             // AI Chat 配置文件（config.json）
             // 以 // 开头的行都是注释，模组读取时会忽略，可以随手改、随手加。
             // 改完执行 /aichat reload 即可生效，不需要重启服务器。
-            // 升级模组时若 config_version 变高，本文件会被重写一次（原文件备份为 config.json.v<旧版本>.bak），
+            // config_version 写的是模组版本号（如 "2.0.3"）：升级模组后若它低于当前模组版本，
+            // 本文件会被重写一次补齐新字段（原文件备份为 config.json.v<旧版本>.bak），
             // 你自己的注释只在这次重写时会被替换成模组内置的说明。
             """;
 
@@ -75,7 +76,7 @@ public final class ConfigDoc {
     /** config.json 的字段顺序、默认值与注释。 */
     public static final List<Object> CONFIG_ENTRIES = List.<Object>of(
             Field.of("config_version",
-                    "配置文件版本，模组用它判断是否需要补新字段。不要手动改小，否则会被当成旧文件重写。",
+                    "配置文件版本，写的是模组版本号（如 \"2.0.3\"）。升级模组后这个值会跟模组版本比对，低于当前版本就补齐新字段并重写一次本文件。不要手动改大，否则升级时不会再补字段。",
                     ConfigManager.CURRENT_CONFIG_VERSION),
 
             Field.of("api_url",
@@ -182,6 +183,9 @@ public final class ConfigDoc {
             Field.of("ignored_chat_prefixes",
                     "【忽略前缀】以这些字符串开头的聊天消息不送给 AI，也不进缓冲和历史上下文。默认 [\"!!\"]：!! 是 MCDR 等指令插件的调用前缀，属于指令而不是聊天，丢给模型只会白烧 token。空数组 = 不忽略任何前缀。",
                     List.of("!!")),
+            Field.of("ignored_player_prefixes",
+                    "【忽略玩家】名字以这些字符串开头的玩家，其聊天消息与加入/退出事件一律不送给 AI。默认 [\"bot_\"]：carpet / 假人常以 bot_ 开头，它们进出服和自言自语会白烧 token、污染聊天历史。判定是忽略大小写的开头匹配，不是正则；空数组 = 不忽略任何玩家。注意它看的是「谁说的」，上面的 ignored_chat_prefixes 看的是「说了什么」。",
+                    List.of("bot_")),
 
             Field.of("tool_result_budget_kb",
                     "单次对话所有工具结果回灌给模型的总预算（KB），0 = 不限。一次对话可能调用 4 轮工具，每轮都会把之前的结果重新发一遍；预算给小了省钱、给大了能读更多内容，默认 24。",
@@ -253,7 +257,7 @@ public final class ConfigDoc {
     /** system.json 的字段顺序、默认值与注释。 */
     public static final List<Object> SYSTEM_ENTRIES = List.<Object>of(
             Field.of("version",
-                    "配置文件版本，模组用它判断是否需要补新字段。",
+                    "配置文件版本，与 config.json 的 config_version 用同一个模组版本号（如 \"2.0.3\"）。",
                     ConfigManager.CURRENT_SYSTEM_VERSION),
             Field.of("dual_model_enabled",
                     "是否启用双模型模式：judge 只判断要不要接话，reply 只负责写回复。留空的字段会回落到 config.json 里的同名配置。",

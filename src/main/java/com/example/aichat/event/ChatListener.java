@@ -20,7 +20,8 @@ import net.minecraft.server.permissions.Permissions;
  *   <li>带特权前缀（默认 {@code !+}）的消息走 {@code ALLOW_CHAT_MESSAGE}：那里可以拦掉广播，
  *       所以「只发给管理员、不广播」的特权请求必须在这个事件里处理，同时也在这里提交给 AI。</li>
  *   <li>普通消息走 {@code CHAT_MESSAGE}，行为与以前一致；但以 {@code ignored_chat_prefixes}
- *       （默认 {@code !!}，MCDR 的调用前缀）开头的指令类消息在这里被直接丢弃，不送 AI。</li>
+ *       （默认 {@code !!}，MCDR 的调用前缀）开头的指令类消息在这里被直接丢弃，不送 AI；
+ *       发送者名字命中 {@code ignored_player_prefixes}（默认 {@code bot_}）的消息同样丢弃。</li>
  * </ul>
  * 特权消息在 CHAT_MESSAGE 里会被直接跳过（前缀判定命中），因此不会重复提交给 AI。
  */
@@ -48,6 +49,14 @@ public final class ChatListener {
             if (content == null || content.isBlank() || !ServerToolAccess.matchesPrefix(content)) {
                 return true;
             }
+            // 被忽略的玩家（默认 bot_ 开头的假人）不送 AI，但消息照常广播，行为等同于普通聊天
+            if (ConfigManager.isIgnoredPlayer(sender.getName().getString())) {
+                if (StateManager.isDebug()) {
+                    AiChatMod.LOGGER.info("[debug] 忽略玩家 {} 的特权请求，未提交给 AI：{}",
+                            sender.getName().getString(), content);
+                }
+                return true;
+            }
             return handlePrivileged(sender, content);
         });
 
@@ -66,6 +75,15 @@ public final class ChatListener {
                 if (ServerToolAccess.matchesPrefix(content)) {
                     return;
                 }
+                // 被忽略的玩家（默认 bot_ 开头的假人）说的话不进缓冲、不进历史、不发请求
+                String playerName = sender.getName().getString();
+                if (ConfigManager.isIgnoredPlayer(playerName)) {
+                    if (StateManager.isDebug()) {
+                        AiChatMod.LOGGER.info("[debug] 忽略玩家 {} 的消息，未提交给 AI：{}",
+                                playerName, content);
+                    }
+                    return;
+                }
                 // 指令类消息（默认 !! 开头，MCDR / 指令插件的调用前缀）不是聊天：
                 // 不送给 AI、不进缓冲区、不进历史上下文，连请求都不会发。
                 if (ConfigManager.isIgnoredChat(content)) {
@@ -76,7 +94,7 @@ public final class ChatListener {
                 }
 
                 AiDispatcher.submit(new ChatContext(
-                        sender.getName().getString(),
+                        playerName,
                         "chat",
                         content,
                         System.currentTimeMillis(),
