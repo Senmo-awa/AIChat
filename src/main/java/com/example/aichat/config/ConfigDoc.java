@@ -182,6 +182,9 @@ public final class ConfigDoc {
             Field.of("ignored_chat_prefixes",
                     "【忽略前缀】以这些字符串开头的聊天消息不送给 AI，也不进缓冲和历史上下文。默认 [\"!!\"]：!! 是 MCDR 等指令插件的调用前缀，属于指令而不是聊天，丢给模型只会白烧 token。空数组 = 不忽略任何前缀。",
                     List.of("!!")),
+            Field.of("ignored_player_prefixes",
+                    "【忽略玩家】名字以这些字符串开头的玩家，其聊天消息与加入/退出事件一律不送给 AI。默认 [\"bot_\"]：carpet / 假人常以 bot_ 开头，它们进出服和自言自语会白烧 token、污染聊天历史。判定是忽略大小写的开头匹配，不是正则；空数组 = 不忽略任何玩家。注意它看的是「谁说的」，上面的 ignored_chat_prefixes 看的是「说了什么」。",
+                    List.of("bot_")),
 
             Field.of("tool_result_budget_kb",
                     "单次对话所有工具结果回灌给模型的总预算（KB），0 = 不限。一次对话可能调用 4 轮工具，每轮都会把之前的结果重新发一遍；预算给小了省钱、给大了能读更多内容，默认 24。",

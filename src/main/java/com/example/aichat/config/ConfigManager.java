@@ -43,8 +43,11 @@ public final class ConfigManager {
      * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
      */
     private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
-    /** 配置版本：9 = 2.0.2（冷却 / 每日预算 / 被动回复 / 密钥脱敏）。 */
-    public static final int CURRENT_CONFIG_VERSION = 9;
+    /**
+     * 配置版本：10 = 2.0.3（忽略玩家名前缀，默认 {@code bot_}）。
+     * 9 = 2.0.2（冷却 / 每日预算 / 被动回复 / 密钥脱敏）。
+     */
+    public static final int CURRENT_CONFIG_VERSION = 10;
     /** system.json 版本：2 = 带注释的渲染。 */
     public static final int CURRENT_SYSTEM_VERSION = 2;
 
@@ -139,6 +142,7 @@ public final class ConfigManager {
             target.buffer_max_chars = 500;
         }
         applyIgnoredPrefixDefaults(target);
+        applyIgnoredPlayerDefaults(target);
         applyGuardDefaults(target);
         if (target.memory_dir == null || target.memory_dir.isBlank()) {
             target.memory_dir = "memory";
@@ -165,6 +169,24 @@ public final class ConfigManager {
             }
         }
         target.ignored_chat_prefixes = cleaned;
+    }
+
+    /**
+     * 忽略玩家前缀的兜底与清洗：null 补默认 {@code ["bot_"]}，去掉空白项并 trim。
+     * 空数组同样是合法配置（表示不忽略任何玩家），不会被换回默认值。
+     */
+    private static void applyIgnoredPlayerDefaults(ModConfig target) {
+        if (target.ignored_player_prefixes == null) {
+            target.ignored_player_prefixes = new ArrayList<>(List.of("bot_"));
+            return;
+        }
+        List<String> cleaned = new ArrayList<>(target.ignored_player_prefixes.size());
+        for (String prefix : target.ignored_player_prefixes) {
+            if (prefix != null && !prefix.isBlank()) {
+                cleaned.add(prefix.trim());
+            }
+        }
+        target.ignored_player_prefixes = cleaned;
     }
 
     /**
@@ -210,6 +232,31 @@ public final class ConfigManager {
         String trimmed = content.stripLeading();
         for (String prefix : current.ignored_chat_prefixes) {
             if (prefix != null && !prefix.isEmpty() && trimmed.startsWith(prefix)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * 这个玩家是否属于「不送给 AI」的假人/机器人。
+     * <p>
+     * 判定发生在进缓冲区之前，聊天与加入/退出事件一视同仁：命中者既不进缓冲、
+     * 也不进历史上下文，连请求都不会发。比较时忽略大小写，{@code BOT_Farm} 同样算。
+     */
+    public static boolean isIgnoredPlayer(String playerName) {
+        if (playerName == null || playerName.isEmpty()) {
+            return false;
+        }
+        ModConfig current = config;
+        if (current == null || current.ignored_player_prefixes == null) {
+            return false;
+        }
+        for (String prefix : current.ignored_player_prefixes) {
+            if (prefix == null || prefix.isEmpty()) {
+                continue;
+            }
+            if (playerName.regionMatches(true, 0, prefix, 0, prefix.length())) {
                 return true;
             }
         }

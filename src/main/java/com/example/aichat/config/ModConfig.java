@@ -28,6 +28,7 @@ import java.util.List;
  * buffer_max_messages: 缓冲区最多条数，满了立即发送
  * buffer_max_chars: 缓冲区最多字符数，满了立即发送
  * ignored_chat_prefixes: 以这些前缀开头的聊天消息不送给 AI（默认 ["!!"]，MCDR 指令）
+ * ignored_player_prefixes: 名字以这些前缀开头的玩家，其聊天与加入/退出事件不送给 AI（默认 ["bot_"]，假人）
  * system_prompt_in_user: 把系统提示词一并放进最后一条用户消息，默认 true
  * memory_enabled: 是否开启记忆功能（AI 可读写记忆文件），默认 true
  * memory_dir: 记忆文件夹名（相对于 config/aichat/）
@@ -98,6 +99,16 @@ public class ModConfig {
      * 想连 {@code !} 这类前缀一起忽略就自己加进数组；空数组表示不忽略任何前缀。
      */
     public List<String> ignored_chat_prefixes = new ArrayList<>(List.of("!!"));
+    /**
+     * 忽略玩家：名字以这些字符串开头的玩家，其聊天与加入/退出事件一律不送给 AI。
+     * <p>
+     * 默认 {@code ["bot_"]}——carpet / 假人（fake player）通常以 {@code bot_} 开头，
+     * 它们进出服和自言自语（自动卖货、挂机测试）会白白吃掉 token，还会污染聊天历史。
+     * 判定是大小写不敏感的 {@code startsWith}，不是正则；空数组表示不忽略任何玩家。
+     * <p>
+     * 与 {@link #ignored_chat_prefixes} 的区别：那个看「消息内容」，这个看「发送者名字」。
+     */
+    public List<String> ignored_player_prefixes = new ArrayList<>(List.of("bot_"));
     /**
      * 是否把系统提示词（含 JSON 格式契约、知识库文件列表、人设）再拼进最后一条用户消息。
      * 部分中转站/兼容端点会把 system 角色整条丢弃，导致模组的提示词从未到达模型，

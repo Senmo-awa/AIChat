@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.0.3 - 未发布
+
+### Added
+
+- **`ignored_player_prefixes`（默认 `["bot_"]`）**：发送者名字以这些前缀开头的玩家，其聊天消息与加入/退出事件一律不送给 AI。carpet 假人通常以 `bot_` 开头，它们进出服、自动卖货、挂机自言自语都会白烧 token，还把 `[bot_farm 加入了游戏]` 这类噪音塞进聊天历史，干扰模型判断。
+  - 判定点：`ChatListener` 的 `CHAT_MESSAGE` 与 `ALLOW_CHAT_MESSAGE`（假人发 `!+` 特权请求也不送 AI，但消息照常广播）；`AiDispatcher.submit()` 另有一道兜底判定，覆盖 chat / join / quit 全部事件类型。
+  - 比较是**忽略大小写的开头匹配**（`regionMatches`，不是正则，不用考虑转义）；`BOT_Farm` 同样命中。
+  - 空数组表示不忽略任何玩家；与 `ignored_chat_prefixes` 互相独立——那个看「说了什么」，这个看「谁说的」。
+  - 启动自检日志与 `/aichat status` 都会打印生效值：`忽略玩家: [bot_]`。
+
+### Changed
+
+- `config.json` 升到 **v10**（新增 `ignored_player_prefixes`），旧文件自动备份（`config.json.v9.bak`）后补字段与注释；`system.json` 仍是 v2。
+- `/aichat status` 的「冷却 / 被动回复 / 脱敏」与「忽略前缀 / 忽略玩家」拆成两行，避免单行过长折行。
+
 ## 2.0.2 - 2026-11-02
 
 ### Added

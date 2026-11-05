@@ -66,6 +66,15 @@ public final class AiDispatcher {
         if (SHUTTING_DOWN.get()) {
             return;
         }
+        // 被忽略的玩家（默认 bot_ 开头的假人）：聊天与加入/退出事件一起拦。
+        // 放在这里而不是只放在 ChatListener，是为了即便将来多出新的入口也不会漏过滤。
+        if (ConfigManager.isIgnoredPlayer(ctx.playerName())) {
+            if (StateManager.isDebug()) {
+                AiChatMod.LOGGER.info("[debug] 忽略玩家 {} 的事件（{}），未提交给 AI",
+                        ctx.playerName(), ctx.eventType());
+            }
+            return;
+        }
         // 指令类消息（默认 !! 开头，MCDR / 指令插件的调用前缀）不送 AI：
         // 即便将来多出新的入口调到这里也不会漏过滤。特权请求不参与这个判定——
         // 它的 !+ 前缀已经被剥掉，内容是管理员明确要让 AI 处理的。
