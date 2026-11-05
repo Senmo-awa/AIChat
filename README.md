@@ -6,7 +6,7 @@
 
 | 模组版本 | 配置文件版本 | 环境 |
 |---|---|---|
-| 2.0.1 | `config.json` v7 · `system.json` v2 | MC 26.1.2 · Fabric Loader 0.19.4+ · Fabric API 0.155.3+26.1.2 · Java 25 |
+| 2.0.3 | `config.json` `"2.0.3"` · `system.json` `"2.0.3"` | MC 26.1.2 · Fabric Loader 0.19.4+ · Fabric API 0.155.3+26.1.2 · Java 25 |
 
 ---
 
@@ -57,7 +57,7 @@
 
 3. 在 `config.json` 填 `api_key`（双模型模式填 `system.json`），`/aichat reload` 或重启生效。改配置不需要重新构建。
 
-> **配置文件自带注释**：每个字段上方都有 `//` 说明，不用翻文档。以 `//` 开头的行读取时会被忽略，可以放心改、也可以自己加注释；模组平时不重写你的文件，只有 `config_version` 升级时才备份（`.v<旧版本>.bak`）并重写一次。
+> **配置文件自带注释**：每个字段上方都有 `//` 说明，不用翻文档。以 `//` 开头的行读取时会被忽略，可以放心改、也可以自己加注释；模组平时不重写你的文件，只有 `config_version` 低于当前模组版本时才备份（`.v<旧版本>.bak`）并重写一次。
 
 ### 从源码构建
 
@@ -93,6 +93,7 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 - **回复解析**：模型返回 `{"action":"reply","content":"..."}` 或只返回 `{"content":"..."}` 时广播，返回 `{"action":"ignore"}` 时静默。返回值带 ```` ```json ```` 代码块或前后有少量文字也能正确解析。
 - **上下文**：最近 `max_context_messages` 条记录（玩家事件与 AI 回复都计入）作为历史随请求发送。
 - **玩家过滤**：`off` 的玩家发言不发 AI、也收不到 AI 消息；`onlyread` 只收不发；被 ban 的玩家彻底不透传。拦截在请求发出前完成，不浪费 token。
+- **假人过滤（2.0.3）**：名字以 `ignored_player_prefixes`（默认 `["bot_"]`）开头的玩家，其聊天和加入/退出事件都不送给 AI——carpet 假人进出服、自动卖货、挂机自言自语都会白烧 token 还污染上下文。判定忽略大小写，`[]` = 不忽略任何玩家。
 - **AI 广播逐个投递**：`off` 玩家收不到，`onlyread` 与 `on` 玩家正常接收。
 - **不创建假玩家，不执行游戏操作**；AI 只能通过工具读写文件。
 - **停服止损（2.0.1）**：收到 `stop` 后立即停止发送一切信息、清空缓冲、取消在途 HTTP 请求（真正掐掉生成中的推理）。停服会断开所有在线玩家，旧版本会把每条 quit 都提交给 AI，一次停服白烧十几条请求——现在一条都不会发。
@@ -452,7 +453,7 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 
 | 字段 | 默认 | 说明 |
 |---|---|---|
-| `config_version` | `10` | 配置版本，模组用它判断是否需要补字段。**不要手动改小**，否则会被当成旧文件重写 |
+| `config_version` | `"2.0.3"` | 配置版本，写的是**模组版本号**（如 `"2.0.3"`）。低于当前模组版本就备份并重写补字段。**不要手动改大**，否则升级时不会再补字段 |
 
 ---
 
@@ -490,13 +491,15 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 
 ## 10. 配置升级
 
-`config.json` 与 `system.json` 都带版本号。启动或 `/aichat reload` 时，若文件版本低于当前版本，会先备份为 `.v<版本>.bak`，再补齐缺失字段与新注释，**已有值不会被覆盖**。
+`config.json` 的 `config_version` 与 `system.json` 的 `version` 写的是**模组版本号**（如 `"2.0.3"`）。启动或 `/aichat reload` 时，若文件里的版本低于当前模组版本，会先备份为 `.v<旧版本>.bak`，再补齐缺失字段与新注释，**已有值不会被覆盖**。
 
-当前版本：`config.json` **v7**、`system.json` **v2**。升级路径示例：从 1.8.0（v5）升上来会备份成 `config.json.v5.bak` / `system.json.v1.bak`，并补上 `server_tools_*` 一组字段（默认全部关闭）；从 2.0.0（v6）升上来会备份成 `config.json.v6.bak`，补上 `tool_result_budget_kb` 与 `fallback_reply`。
+- **老整数版本照旧能升级**：2.0.2 及以前的 `config_version: 9` 会被当成 `0.0.9` 处理，一定低于任何 `2.x`，于是备份成 `config.json.v9.bak` 并补上新字段（例如升级到 2.0.3 会补上 `ignored_player_prefixes`）。
+- **开发构建不会反复重写**：`2.0.3-dev.1` 这类开发号只比对主版本 `2.0.3`，同一发布号的多个开发包不会每次都改写你的文件。
+- 版本一致时连一个字节都不改动。
 
-2.0.0 起配置文件由 `ConfigDoc` 渲染：字段顺序、默认值、中文注释来自同一处定义，重建文件不会丢注释，也不会「模板和代码对不上」。只在版本变化时重写一次；平时你手改的注释、缩进、字段顺序都原样保留。
+2.0.0 起配置文件由 `ConfigDoc` 渲染：字段顺序、默认值、中文注释来自同一处定义，重建文件不会丢注释，也不会「模板和代码对不上」。
 
-**提示词文件不会被覆盖**：`system_prompt.txt` / `persona_prompt.txt` / `judge_prompt.txt` / `reply_prompt.txt` 只在不存在时创建。升级后需要手动同步提示词的改动，具体改法见 [UPDATE-2.0.1.md](UPDATE-2.0.1.md) 第五节。
+**提示词文件不会被覆盖**：`system_prompt.txt` / `persona_prompt.txt` / `judge_prompt.txt` / `reply_prompt.txt` 只在不存在时创建。模组新增的规则（如 2.0.1 起 `system_prompt.txt` 工具规则第 3 条的「管理员特权请求」标注）需要你自己同步进已有提示词，否则模型可能反过来说「我没有权限」。
 
 ---
 
@@ -504,7 +507,7 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 
 ### AI 完全不回复
 
-1. 看启动日志的版本号（`AI Chat v2.0.1 已加载`），确认跑的是哪个 jar。
+1. 看启动日志的版本号（`AI Chat v2.0.3 已加载`），确认跑的是哪个 jar。
 2. `/aichat debug` 打开调试，再发一句，看 `[debug] 解析结果：reply=...`。
 3. 原始响应有内容但 `reply=false` → 问题在解析或提示词；原始响应本身没内容 → 问题在模型或平台。
 4. 模型在「分析日志 / 总结事件」而不输出 `{"action":...}` → 提示词没到模型，多半是中转站丢了 `system`，确认 `system_prompt_in_user: true`。
@@ -563,10 +566,8 @@ export JAVA_HOME=/path/to/jdk-25    # Windows: set JAVA_HOME=D:\path\to\jdk-25
 | 文件 | 内容 |
 |---|---|
 | `README.md` | 本文件：完整用法、配置项、命令、排查 |
-| `UPDATE-2.0.1.md` | 2.0.1 更新说明：五个修复的来龙去脉、提示词替换、验证清单 |
-| `UPDATE-2.0.0.md` | 2.0.0 更新说明：服务器管理工具怎么用、升级步骤、已知限制 |
-| `RELEASE-NOTES-2.0.1.md` | Release 正文：2.0.0 功能 + 2.0.1 修复的整合说明 |
 | `CHANGELOG.md` | 逐版本变更记录 |
+| `LICENSE` | MIT 许可证 |
 
 **安全提醒**：API Key 以明文保存在 `config/aichat/config.json` 与 `system.json`，请限制配置文件访问权限；`server_tools_deny_paths` 默认已挡住这两个文件，但操作系统层面仍建议收紧。
 

@@ -28,7 +28,7 @@ import java.util.Map;
  * 2.0.0 起 config.json / system.json 由 {@link ConfigDoc} 生成：文件里带 {@code //} 注释，
  * 读取时用宽松 JSON 读法跳过注释（Gson 的 JsonParser 本身就是宽松读），写入时按字段表重新渲染。
  * 平时（版本未变）完全不重写用户的文件，所以玩家自己加的注释、缩进、空行都会原样保留；
- * 只有 config_version 变高时才会备份并重写一次，把新字段和新说明补进去。
+ * 只有 config_version 低于当前模组版本时才会备份并重写一次，把新字段和新说明补进去。
  */
 public final class ConfigManager {
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
@@ -44,12 +44,17 @@ public final class ConfigManager {
      */
     private static final int DEFAULT_JUDGE_MAX_OUTPUT_TOKENS = 1024;
     /**
-     * 配置版本：10 = 2.0.3（忽略玩家名前缀，默认 {@code bot_}）。
-     * 9 = 2.0.2（冷却 / 每日预算 / 被动回复 / 密钥脱敏）。
+     * 配置文件版本：直接用模组版本号（如 {@code "2.0.3"}），升级模组后版本号变了就补齐新字段并重写一次。
+     * <p>
+     * 比以前的整数计数器直观：配置文件里写着 {@code "config_version": "2.0.2"} 一眼就知道是哪个版本的配置。
+     * 取的是模组元数据里的版本，开发号后缀（{@code -dev.N}）会被去掉，同一发布号的多个开发构建
+     * 不会反复重写用户文件。
      */
-    public static final int CURRENT_CONFIG_VERSION = 10;
-    /** system.json 版本：2 = 带注释的渲染。 */
-    public static final int CURRENT_SYSTEM_VERSION = 2;
+    public static final String CURRENT_CONFIG_VERSION = resolveModVersion();
+    /** system.json 与 config.json 用同一个版本号，方便对照。 */
+    public static final String CURRENT_SYSTEM_VERSION = CURRENT_CONFIG_VERSION;
+    /** 取不到模组元数据时（极少数加载顺序问题）退回这个版本号。 */
+    private static final String FALLBACK_VERSION = "2.0.3";
 
     private static volatile ModConfig config;
     private static volatile SystemConfig systemConfig;
@@ -317,28 +322,21 @@ public final class ConfigManager {
     }
 
     /**
-     * 读取配置文档：文件不存在时按字段表生成（带注释），版本偏低时备份后重写，
+     * 读取配置文档：文件不存在时按字段表生成（带注释），版本低于当前版本时备份后重写，
      * 版本一致时原样读、一个字节都不动。
      */
-    private static JsonObject loadOrCreate(Path file, java.util.List<?> entries, int currentVersion,
+    private static JsonObject loadOrCreate(Path file, java.util.List<?> entries, String currentVersion,
                                            String versionField, String displayName, boolean system)
             throws IOException {
         if (!Files.exists(file)) {
             writeRendered(file, entries, ConfigDoc.defaults(entries), system);
-            AiChatMod.LOGGER.info("已生成默认配置：{}", displayName);
+            AiChatMod.LOGGER.info("已生成默认配置：{}（版本 {}）", displayName, currentVersion);
             return ConfigDoc.defaults(entries);
         }
 
         JsonObject user = readLenient(file, displayName);
-        int version = 1;
-        if (user.has(versionField) && user.get(versionField).isJsonPrimitive()) {
-            try {
-                version = user.get(versionField).getAsInt();
-            } catch (NumberFormatException ignored) {
-                version = 1;
-            }
-        }
-        if (version >= currentVersion) {
+        String version = readVersion(user, versionField);
+        if (!isOlderThan(version, currentVersion)) {
             return user;
         }
 
@@ -346,9 +344,116 @@ public final class ConfigManager {
         merged.addProperty(versionField, currentVersion);
         backup(file, version);
         writeRendered(file, entries, merged, system);
-        AiChatMod.LOGGER.info("已升级 {}（v{} -> v{}），原文件已备份，新字段与注释已补齐",
-                displayName, version, currentVersion);
+        AiChatMod.LOGGER.info("已升级 {}（{} -> {}），原文件已备份，新字段与注释已补齐",
+                displayName, version.isBlank() ? "未知" : version, currentVersion);
         return merged;
+    }
+
+    /** 取模组版本号作为配置版本；去掉开发号后缀（{@code 2.0.3-dev.1} -> {@code 2.0.3}）。 */
+    private static String resolveModVersion() {
+        try {
+            return FabricLoader.getInstance()
+                    .getModContainer("aichat")
+                    .map(container -> container.getMetadata().getVersion().getFriendlyString())
+                    .map(ConfigManager::baseVersion)
+                    .orElse(FALLBACK_VERSION);
+        } catch (RuntimeException | LinkageError e) {
+            return FALLBACK_VERSION;
+        }
+    }
+
+    /** 版本号只取主段：{@code 2.0.3-dev.1+build5} -> {@code 2.0.3}。 */
+    private static String baseVersion(String raw) {
+        String value = raw == null ? "" : raw.trim();
+        int cut = value.indexOf('-');
+        if (cut > 0) {
+            value = value.substring(0, cut);
+        }
+        cut = value.indexOf('+');
+        if (cut > 0) {
+            value = value.substring(0, cut);
+        }
+        return value.isBlank() ? FALLBACK_VERSION : value;
+    }
+
+    /** 读文件里的版本值：老配置是整数（{@code 9}），新配置是版本号字符串（{@code "2.0.3"}），都按字符串取。 */
+    private static String readVersion(JsonObject user, String versionField) {
+        if (user == null || !user.has(versionField)) {
+            return "";
+        }
+        var element = user.get(versionField);
+        if (element == null || !element.isJsonPrimitive()) {
+            return "";
+        }
+        try {
+            return element.getAsString().trim();
+        } catch (RuntimeException e) {
+            return "";
+        }
+    }
+
+    /**
+     * 文件里的版本是否比当前版本旧（旧了才备份重写）。
+     * <p>
+     * 兼容三种写法：{@code "2.0.3"}（版本号）、{@code "9"}（2.0.2 及以前的整数计数器，按 {@code 0.0.9} 处理，
+     * 一定低于任何 {@code 2.x}）、以及认不出来的字符串（一律当旧的，反正重写前会备份）。
+     */
+    static boolean isOlderThan(String userVersion, String currentVersion) {
+        int[] current = parseVersion(currentVersion);
+        if (current == null) {
+            // 当前版本号自己都解析不出来：宁可不动用户文件
+            return false;
+        }
+        int[] user = parseVersion(userVersion);
+        if (user == null) {
+            return true;
+        }
+        int length = Math.max(user.length, current.length);
+        for (int i = 0; i < length; i++) {
+            int left = i < user.length ? user[i] : 0;
+            int right = i < current.length ? current[i] : 0;
+            if (left != right) {
+                return left < right;
+            }
+        }
+        return false;
+    }
+
+    /** 解析成数字段：{@code "2.0.3"} -> {@code [2,0,3]}；纯整数老格式 {@code "9"} -> {@code [0,0,9]}；解析不了返回 null。 */
+    private static int[] parseVersion(String raw) {
+        if (raw == null) {
+            return null;
+        }
+        String value = raw.trim();
+        if (value.startsWith("v") || value.startsWith("V")) {
+            value = value.substring(1);
+        }
+        int cut = value.indexOf('-');
+        if (cut >= 0) {
+            value = value.substring(0, cut);
+        }
+        cut = value.indexOf('+');
+        if (cut >= 0) {
+            value = value.substring(0, cut);
+        }
+        if (value.isBlank()) {
+            return null;
+        }
+        boolean legacyCounter = value.indexOf('.') < 0;
+        String[] parts = value.split("\\.");
+        int[] numbers = new int[legacyCounter ? 3 : parts.length];
+        int offset = legacyCounter ? 2 : 0;
+        for (int i = 0; i < parts.length; i++) {
+            if (parts[i].isEmpty() || !parts[i].chars().allMatch(Character::isDigit)) {
+                return null;
+            }
+            try {
+                numbers[offset + i] = Integer.parseInt(parts[i]);
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return numbers;
     }
 
     /**
@@ -392,8 +497,15 @@ public final class ConfigManager {
         return result;
     }
 
-    private static void backup(Path file, int version) throws IOException {
-        String name = file.getFileName() + ".v" + version + ".bak";
+    /**
+     * 备份文件名形如 {@code config.json.v2.0.2.bak} / {@code config.json.v9.bak}（老整数版本）。
+     * 版本号里的非法字符会被替换，避免造出奇怪的文件名。
+     */
+    private static void backup(Path file, String version) throws IOException {
+        String label = version == null || version.isBlank()
+                ? "unknown"
+                : version.replaceAll("[^0-9A-Za-z._-]", "_");
+        String name = file.getFileName() + ".v" + label + ".bak";
         Path backup = file.resolveSibling(name);
         if (!Files.exists(backup)) {
             Files.copy(file, backup, StandardCopyOption.REPLACE_EXISTING);

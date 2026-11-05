@@ -6,7 +6,8 @@ package com.example.aichat.config;
  * 字段留空时回退到 config.json 的同名配置。
  */
 public class SystemConfig {
-    public int version = 1;
+    /** 配置文件版本，与 config.json 的 config_version 用同一个版本号（如 {@code "2.0.3"}）。 */
+    public String version = "";
     public boolean dual_model_enabled = false;
     public ApiSettings judge = new ApiSettings();
     public ApiSettings reply = new ApiSettings();

@@ -1,6 +1,6 @@
 # Changelog
 
-## 2.0.3 - 未发布
+## 2.0.3 - 2026-11-05
 
 ### Added
 
@@ -12,8 +12,12 @@
 
 ### Changed
 
-- `config.json` 升到 **v10**（新增 `ignored_player_prefixes`），旧文件自动备份（`config.json.v9.bak`）后补字段与注释；`system.json` 仍是 v2。
+- **配置文件版本改成版本号格式**：`config.json` 的 `config_version` 与 `system.json` 的 `version` 不再用整数计数器，改写成**模组版本号**（如 `"2.0.3"`）。谁是哪个版本的配置一眼看得出来，将来也不用再维护一份「v9 = 2.0.2」的对照表。
+  - 比较逻辑兼容旧文件：`config_version: 9` 这类整数会被当成 `0.0.9`，一定低于任何 `2.x`，所以升级上来照样触发一次备份 + 补字段（备份名 `config.json.v9.bak`，带点号，不会覆盖老备份）。
+  - 开发构建只比对主版本号（`2.0.3-dev.1` → `2.0.3`），同一发布号下的多个开发包不会反复重写你的配置。
+  - 版本号取自模组元数据（`fabric.mod.json` 的 `version`），跟 `gradle.properties` 的 `mod_version` 天然一致，不会漏改。
 - `/aichat status` 的「冷却 / 被动回复 / 脱敏」与「忽略前缀 / 忽略玩家」拆成两行，避免单行过长折行。
+- 仓库只保留 `README.md` + `CHANGELOG.md`：`UPDATE-2.0.0.md` / `UPDATE-2.0.1.md` / `UPDATE-2.0.2.md` / `RELEASE-NOTES-2.0.1.md` 已删除，历史内容都在本文件里；Release 正文改为从本文件的对应版本段落生成。
 
 ## 2.0.2 - 2026-11-02
 

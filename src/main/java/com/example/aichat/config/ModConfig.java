@@ -22,7 +22,7 @@ import java.util.List;
  * reasoning_effort: low/medium/high 等；留空则不发送
  * max_output_tokens: 最大输出 token；0 表示不发送（Anthropic 用默认值）
  * thinking_budget_tokens: Anthropic 思考预算
- * config_version: 配置文件版本，用于升级时自动补齐新字段
+ * config_version: 配置文件版本（模组版本号，如 "2.0.3"），用于升级时自动补齐新字段
  * buffer_enabled: 是否启用消息缓冲（防抖合并，省 token）
  * buffer_delay_seconds: 最后一条消息后等待多少秒再发送
  * buffer_max_messages: 缓冲区最多条数，满了立即发送
@@ -36,7 +36,8 @@ import java.util.List;
  * server_tools_*: 服务器根目录文件管理工具（默认关闭，只有带前缀的特权消息才能调用）
  */
 public class ModConfig {
-    public int config_version = 7;
+    /** 配置文件版本，写的是模组版本号（如 {@code "2.0.3"}）。由 ConfigDoc 渲染写入，这里只为反序列化对齐。 */
+    public String config_version = "";
     public String api_url = "https://api.deepseek.com/chat/completions";
     public String api_key = "";
     public String model = "deepseek-flash";
