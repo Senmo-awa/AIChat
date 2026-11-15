@@ -1,6 +1,10 @@
 package com.example.aichat.ai;
 
+import java.time.Instant;
+import java.time.ZoneId;
+import java.time.format.DateTimeFormatter;
 import java.util.List;
+import java.util.Locale;
 import java.util.stream.Collectors;
 
 /**
@@ -16,8 +20,25 @@ public record ChatContext(
         long timestamp,
         boolean serverTools
 ) {
+    /**
+     * 事件时间戳（{@link System#currentTimeMillis()}）的展示格式。
+     * <p>
+     * 2.0.4 之前这里直接输出 13 位毫秒数（如 {@code 1794669338238}），模型无法把它换算成日期：
+     * 实测思考过程里写「时间戳 1794669338238 → 换算大概。我不知道确切日期」，被问「上次上线是什么时候」
+     * 只能回答查不到。所以统一转成本地时间字符串，人类和模型都直接可读。
+     */
+    private static final DateTimeFormatter TIME_FORMAT =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss EEE", Locale.SIMPLIFIED_CHINESE);
+
     public ChatContext(String playerName, String eventType, String content, long timestamp) {
         this(playerName, eventType, content, timestamp, false);
+    }
+
+    /** 毫秒时间戳 → {@code 2026-11-14 23:15:38 周六}（服务器本地时区）。 */
+    public static String humanTime(long millis) {
+        return Instant.ofEpochMilli(millis)
+                .atZone(ZoneId.systemDefault())
+                .format(TIME_FORMAT);
     }
 
     public String toUserMessage() {
@@ -26,7 +47,7 @@ public record ChatContext(
         }
         return "玩家名：" + playerName
                 + "｜事件类型：" + eventType
-                + "｜时间：" + timestamp
+                + "｜时间：" + humanTime(timestamp)
                 + "｜内容：" + content;
     }
 

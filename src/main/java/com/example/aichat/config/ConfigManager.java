@@ -18,8 +18,11 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Locale;
 import java.util.Map;
 
 /**
@@ -589,10 +592,28 @@ public final class ConfigManager {
                 }
                 prompt = prompt + ServerToolAccess.promptSection();
             }
-            return prompt;
+            return prompt + currentTimeSection();
         } catch (IOException e) {
             throw new RuntimeException("读取提示词文件失败: " + fileName, e);
         }
+    }
+
+    /**
+     * 每次构建提示词时追加的「当前时间」段落。
+     * <p>
+     * 只靠事件消息里的时间字段，模型能知道某件事发生在什么时候，但不知道「现在」是几点——
+     * 被问「现在几点」「三天前」时无从下手。这里直接给出服务器本地时间。
+     * 放在末尾而不写进 {@code system_prompt.txt}，是为了不打扰玩家自己维护的提示词文件。
+     */
+    private static String currentTimeSection() {
+        ZonedDateTime now = ZonedDateTime.now();
+        String clock = now.format(
+                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss EEE", Locale.SIMPLIFIED_CHINESE));
+        return "\n\n【当前时间】" + clock
+                + "（时区 " + now.getZone().getId()
+                + "，UTC" + now.getOffset().getId().replace("Z", "+00:00") + "）"
+                + "\n事件消息里的「时间」字段用的是同一种本地时间格式，可以直接引用、比较和换算，"
+                + "不要说读不出来或查不到。";
     }
 
     public static ApiProfile singleProfile() {
