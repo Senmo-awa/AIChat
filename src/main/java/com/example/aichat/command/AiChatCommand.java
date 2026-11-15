@@ -20,6 +20,7 @@ import net.minecraft.commands.Commands;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerPlayer;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Predicate;
 
@@ -145,10 +146,9 @@ public final class AiChatCommand {
             return 0;
         }
         long today = UsageStore.todayTotal();
-        String budget = config.daily_token_budget <= 0 ? "不限" : String.valueOf(config.daily_token_budget);
-        String remain = config.daily_token_budget <= 0
-                ? "不限"
-                : String.valueOf(Math.max(0L, config.daily_token_budget - today));
+        long remainValue = config.daily_token_budget <= 0
+                ? 0L
+                : Math.max(0L, config.daily_token_budget - today);
         int requests = UsageStore.lastDays(1).stream().mapToInt(UsageStore.DailyUsage::requests).sum();
         String cooldown = config.player_cooldown_seconds <= 0
                 ? "关"
@@ -174,9 +174,8 @@ public final class AiChatCommand {
                         + "｜协议：" + config.api_type
                         + "｜模式：" + modelModeLabel()
                         + "｜工具：" + (config.enable_tools ? "开" : "关")), false);
-        source.sendSuccess(() -> Component.literal(
-                "今日 token：" + today + " / 预算 " + budget + "（剩 " + remain + "）"
-                        + "｜今日请求 " + requests + " 次"), false);
+        source.sendSuccess(() -> TokenReport.statusLine(
+                today, config.daily_token_budget, remainValue, requests), false);
         source.sendSuccess(() -> Component.literal(
                 "冷却：" + cooldown
                         + "｜被动回复：" + mention
@@ -215,26 +214,7 @@ public final class AiChatCommand {
     /** /aichat token pm：私聊账本的按玩家明细，方便对账与排查「谁在私聊烧 token」。 */
     private static int showPrivateTokens(CommandSourceStack source) {
         List<UsageStore.PlayerUsage> players = UsageStore.privateByPlayer(7);
-        StringBuilder text = new StringBuilder("最近 7 天私聊 token：");
-        if (players.isEmpty()) {
-            text.append("\n（暂无记录）");
-        } else {
-            long total = 0;
-            int requests = 0;
-            for (UsageStore.PlayerUsage player : players) {
-                text.append('\n').append(player.player())
-                        .append("  ").append(format(player.prompt()))
-                        .append(" + ").append(format(player.completion()))
-                        .append(" = ").append(format(player.total()))
-                        .append(" tokens，").append(player.requests()).append(" 次");
-                total += player.total();
-                requests += player.requests();
-            }
-            text.append("\n合计：").append(format(total)).append(" tokens，")
-                    .append(requests).append(" 次请求（").append(players.size()).append(" 位玩家）");
-        }
-        String message = text.toString();
-        source.sendSuccess(() -> Component.literal(message), false);
+        sendLines(source, TokenReport.privateByPlayer(players));
         return 1;
     }
 
@@ -281,27 +261,8 @@ public final class AiChatCommand {
     /** /aichat token model：多模型模式下按模型看谁在花钱。 */
     private static int showModelTokens(CommandSourceStack source) {
         List<UsageStore.ModelUsage> models = UsageStore.byModel(7);
-        StringBuilder text = new StringBuilder("最近 7 天按模型分类的 token：");
-        if (models.isEmpty()) {
-            text.append("\n（暂无记录）");
-        } else {
-            long total = 0;
-            int requests = 0;
-            for (UsageStore.ModelUsage model : models) {
-                text.append('\n').append(model.model())
-                        .append("  ").append(format(model.prompt()))
-                        .append(" + ").append(format(model.completion()))
-                        .append(" = ").append(format(model.total()))
-                        .append(" tokens，").append(model.requests()).append(" 次");
-                total += model.total();
-                requests += model.requests();
-            }
-            text.append("\n合计：").append(format(total)).append(" tokens，")
-                    .append(requests).append(" 次请求");
-        }
-        String message = text.toString();
-        source.sendSuccess(() -> Component.literal(message), false);
-        return models.size();
+        sendLines(source, TokenReport.byModel(models));
+        return Math.max(1, models.size());
     }
 
     /**
@@ -377,43 +338,12 @@ public final class AiChatCommand {
 
     private static int showTokens(CommandSourceStack source) {
         List<UsageStore.DailyUsage> days = UsageStore.lastDays(7);
-        long prompt = 0;
-        long completion = 0;
-        long total = 0;
         int requests = 0;
-
-        StringBuilder text = new StringBuilder("最近 7 天 token 用量：");
         for (UsageStore.DailyUsage day : days) {
-            text.append('\n')
-                    .append(day.date())
-                    .append("  ")
-                    .append(format(day.prompt()))
-                    .append(" + ")
-                    .append(format(day.completion()))
-                    .append(" = ")
-                    .append(format(day.total()))
-                    .append(" tokens，")
-                    .append(day.requests())
-                    .append(" 次");
-            prompt += day.prompt();
-            completion += day.completion();
-            total += day.total();
             requests += day.requests();
         }
 
-        if (requests == 0) {
-            text.append("\n（暂无记录）");
-        } else {
-            text.append("\n合计：")
-                    .append(format(prompt))
-                    .append(" + ")
-                    .append(format(completion))
-                    .append(" = ")
-                    .append(format(total))
-                    .append(" tokens，")
-                    .append(requests)
-                    .append(" 次请求");
-        }
+        List<Component> lines = new ArrayList<>(TokenReport.daily(days));
 
         // 私聊单独一块：不与公屏混算，清空也是分开的
         long pmTotal = 0;
@@ -423,20 +353,17 @@ public final class AiChatCommand {
             pmTotal += player.total();
             pmRequests += player.requests();
         }
-        text.append("\n\n私聊（最近 7 天）：")
-                .append(format(pmTotal))
-                .append(" tokens，")
-                .append(pmRequests)
-                .append(" 次请求");
-        if (pmPlayers.isEmpty()) {
-            text.append("（暂无）");
-        } else {
-            text.append("，").append(pmPlayers.size()).append(" 位玩家（明细：/aichat token pm）");
-        }
+        lines.add(TokenReport.privateSummary(pmTotal, pmRequests, pmPlayers.size()));
 
-        String message = text.toString();
-        source.sendSuccess(() -> Component.literal(message), false);
+        sendLines(source, lines);
         return requests;
+    }
+
+    /** 表格按行发：一行一条聊天消息，换行不依赖组件里塞 {@code \n}。 */
+    private static void sendLines(CommandSourceStack source, List<Component> lines) {
+        for (Component line : lines) {
+            source.sendSuccess(() -> line, false);
+        }
     }
 
     private static int setChatEnabled(CommandSourceStack source, boolean enabled) {
@@ -585,10 +512,6 @@ public final class AiChatCommand {
                 } + "）";
         source.sendSuccess(() -> Component.literal(message), false);
         return 1;
-    }
-
-    private static String format(long value) {
-        return String.format("%,d", value);
     }
 
     /** 当前模式的一句话描述：单模型 / 双模型（旧）/ 多模型 N 个。 */
