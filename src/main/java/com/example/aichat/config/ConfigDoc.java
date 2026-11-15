@@ -209,6 +209,11 @@ public final class ConfigDoc {
             Field.of("redact_secrets",
                     "广播前把疑似密钥的内容（sk-xxx / Bearer xxx / password=xxx）替换成 ***。默认开，防 AI 把读到的密码或 Key 说出来。",
                     true),
+            Field.of("private_chat_mode",
+                    "【私聊】/aichat pm <内容> 的可用范围：off 关闭 / admin 仅管理员（默认）/ all 所有人。"
+                            + "管理员沿用下面 server_tools_permission_mode 的判定方式（op 等级、管理员名单或 LuckPerms 节点），不另立名单。"
+                            + "私聊回复只发给发起者本人，不进公共历史；token 单独统计，/aichat token 里分开显示。",
+                    "admin"),
 
             Field.of("server_tools_enabled",
                     "【服务器管理工具总开关】默认 false。开启后，拥有权限的玩家在聊天里用前缀发起请求，AI 才能读写服务器根目录（查看/新建/修改/删除文件）。",

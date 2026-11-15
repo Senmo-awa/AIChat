@@ -177,7 +177,18 @@ public final class ServerToolAccess {
 
     /** 这名玩家能不能用服务器管理工具。 */
     public static boolean allowed(ServerPlayer player) {
-        if (player == null || !active()) {
+        return active() && isModerator(player);
+    }
+
+    /**
+     * 是否为「模组管理员」：只看权限判定方式（op 等级 / 管理员名单 / LuckPerms 节点），
+     * <b>不要求</b> {@code server_tools_enabled} 打开、也不看特权前缀。
+     * <p>
+     * 私聊（{@code /aichat pm}）的「仅管理员」模式复用这套判定：管理员是谁一直由
+     * {@code server_tools_permission_mode} 这一组配置说了算，不在别处另立一套名单。
+     */
+    public static boolean isModerator(ServerPlayer player) {
+        if (player == null) {
             return false;
         }
         return switch (permissionMode()) {

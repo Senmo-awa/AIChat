@@ -1,6 +1,7 @@
 package com.example.aichat.command;
 
 import com.example.aichat.ai.AiDispatcher;
+import com.example.aichat.ai.ChatContext;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
 import com.example.aichat.guard.Guards;
@@ -31,6 +32,8 @@ public final class AiChatCommand {
     /** 改管理员名单等于发服务器管理权限，要求 op 满级（4 级）。 */
     private static final Predicate<CommandSourceStack> OWNER =
             Commands.hasPermission(Commands.LEVEL_OWNERS);
+    /** 单条私聊内容上限：既是防刷屏，也防一次把上下文撑爆。 */
+    private static final int MAX_PRIVATE_CHARS = 1000;
 
     private AiChatCommand() {
     }
@@ -41,8 +44,17 @@ public final class AiChatCommand {
                 .then(Commands.literal("token")
                         .requires(ADMIN)
                         .executes(ctx -> showTokens(ctx.getSource()))
+                        .then(Commands.literal("pm")
+                                .executes(ctx -> showPrivateTokens(ctx.getSource())))
                         .then(Commands.literal("clear")
-                                .executes(ctx -> clearTokens(ctx.getSource()))))
+                                .executes(ctx -> clearTokens(ctx.getSource(), false))
+                                .then(Commands.literal("all")
+                                        .executes(ctx -> clearTokens(ctx.getSource(), true)))))
+                .then(Commands.literal("pm")
+                        .then(Commands.argument("message", StringArgumentType.greedyString())
+                                .executes(ctx -> privateChat(
+                                        ctx.getSource(),
+                                        StringArgumentType.getString(ctx, "message")))))
                 .then(Commands.literal("enable")
                         .requires(ADMIN)
                         .executes(ctx -> setChatEnabled(ctx.getSource(), true)))
@@ -163,26 +175,113 @@ public final class AiChatCommand {
                         + "｜被动回复：" + mention
                         + "｜密钥脱敏：" + (config.redact_secrets ? "开" : "关")), false);
         source.sendSuccess(() -> Component.literal(
+                "私聊：" + ConfigManager.describePrivateChatMode()
+                        + "｜私聊历史：" + AiDispatcher.privateHistoryPlayers() + " 位发起者"), false);
+        source.sendSuccess(() -> Component.literal(
                 "忽略前缀：" + prefixes
                         + "｜忽略玩家：" + ignoredPlayers), false);
         return 1;
     }
 
-    private static int clearTokens(CommandSourceStack source) {
-        boolean cleared = UsageStore.clear();
-        String message = cleared
-                ? "token 用量已清空，重新开始统计。"
-                : "没有可清空的 token 记录。";
+    /**
+     * 清空 token 统计。
+     * <p>
+     * 默认只清公屏账本，私聊消耗不动（私聊常常是服主自己的测试记录，删了就没法对账）；
+     * 要连私聊一起清得显式写 {@code /aichat token clear all}。
+     */
+    private static int clearTokens(CommandSourceStack source, boolean all) {
+        boolean cleared = UsageStore.clear(all);
+        String message;
+        if (cleared) {
+            message = all
+                    ? "已清空全部 token 记录（公屏 + 私聊），重新开始统计。"
+                    : "已清空公屏 token 记录，私聊记录保留（要连私聊一起清：/aichat token clear all）。";
+        } else {
+            message = all
+                    ? "没有可清空的 token 记录。"
+                    : "没有可清空的公屏 token 记录（私聊记录不计入这里）。";
+        }
         source.sendSuccess(() -> Component.literal(message), true);
         return cleared ? 1 : 0;
+    }
+
+    /** /aichat token pm：私聊账本的按玩家明细，方便对账与排查「谁在私聊烧 token」。 */
+    private static int showPrivateTokens(CommandSourceStack source) {
+        List<UsageStore.PlayerUsage> players = UsageStore.privateByPlayer(7);
+        StringBuilder text = new StringBuilder("最近 7 天私聊 token：");
+        if (players.isEmpty()) {
+            text.append("\n（暂无记录）");
+        } else {
+            long total = 0;
+            int requests = 0;
+            for (UsageStore.PlayerUsage player : players) {
+                text.append('\n').append(player.player())
+                        .append("  ").append(format(player.prompt()))
+                        .append(" + ").append(format(player.completion()))
+                        .append(" = ").append(format(player.total()))
+                        .append(" tokens，").append(player.requests()).append(" 次");
+                total += player.total();
+                requests += player.requests();
+            }
+            text.append("\n合计：").append(format(total)).append(" tokens，")
+                    .append(requests).append(" 次请求（").append(players.size()).append(" 位玩家）");
+        }
+        String message = text.toString();
+        source.sendSuccess(() -> Component.literal(message), false);
+        return 1;
+    }
+
+    /**
+     * /aichat pm &lt;内容&gt;：私聊问 AI 一句，回复只发给自己。
+     * <p>
+     * 玩家与控制台都能用——控制台调这个命令就是最省事的「私聊通道自检」：
+     * 不打扰任何玩家，回复直接打在服务端控制台里。
+     * 可用范围由 config.json 的 {@code private_chat_mode} 决定（off / admin / all）。
+     */
+    private static int privateChat(CommandSourceStack source, String message) {
+        String mode = ConfigManager.privateChatMode();
+        if ("off".equals(mode)) {
+            source.sendFailure(Component.literal(
+                    "私聊功能已关闭（config.json 的 private_chat_mode 设为 admin 或 all 后 /aichat reload）。"));
+            return 0;
+        }
+        ServerPlayer player = source.getPlayer();
+        String sender;
+        if (player == null) {
+            sender = AiDispatcher.CONSOLE_SENDER;
+        } else {
+            sender = player.getName().getString();
+            if ("admin".equals(mode) && !ServerToolAccess.isModerator(player)) {
+                source.sendFailure(Component.literal(
+                        "私聊目前仅管理员可用（private_chat_mode=admin）。管理员判定沿用 server_tools_permission_mode。"));
+                return 0;
+            }
+        }
+        String content = message == null ? "" : message.trim();
+        if (content.isEmpty()) {
+            source.sendFailure(Component.literal("用法：/aichat pm <要对 AI 说的话>"));
+            return 0;
+        }
+        int limit = MAX_PRIVATE_CHARS;
+        if (content.length() > limit) {
+            source.sendFailure(Component.literal("私聊内容太长（" + content.length() + " 字），上限 " + limit + " 字。"));
+            return 0;
+        }
+        source.sendSuccess(() -> Component.literal("你对小墨私聊说：" + content), false);
+        AiDispatcher.submitPrivate(new ChatContext(
+                sender, "pm", content, System.currentTimeMillis(), false, true));
+        return 1;
     }
 
     private static int showHelp(CommandSourceStack source) {
         String text = """
                 /aichat on|off|onlyread —— 设置自己的 AI 聊天状态
+                /aichat pm <内容> —— 私聊问 AI 一句，回复只有你自己看得到（可用范围见 private_chat_mode）
                 管理员命令：
-                /aichat token —— 最近 7 天 token 用量
-                /aichat token clear —— 清空统计并重新计算
+                /aichat token —— 最近 7 天 token 用量（公屏与私聊分开统计）
+                /aichat token pm —— 私聊 token 按玩家明细
+                /aichat token clear —— 清空公屏统计（私聊记录保留）
+                /aichat token clear all —— 连私聊一起清空
                 /aichat reload —— 热重载配置文件
                 /aichat enable|disable —— 全局开启/关闭 AI 聊天
                 /aichat debug —— 切换调试模式（聊天框 token 用量 + 日志原始响应）
@@ -232,6 +331,25 @@ public final class AiChatCommand {
                     .append(" tokens，")
                     .append(requests)
                     .append(" 次请求");
+        }
+
+        // 私聊单独一块：不与公屏混算，清空也是分开的
+        long pmTotal = 0;
+        int pmRequests = 0;
+        List<UsageStore.PlayerUsage> pmPlayers = UsageStore.privateByPlayer(7);
+        for (UsageStore.PlayerUsage player : pmPlayers) {
+            pmTotal += player.total();
+            pmRequests += player.requests();
+        }
+        text.append("\n\n私聊（最近 7 天）：")
+                .append(format(pmTotal))
+                .append(" tokens，")
+                .append(pmRequests)
+                .append(" 次请求");
+        if (pmPlayers.isEmpty()) {
+            text.append("（暂无）");
+        } else {
+            text.append("，").append(pmPlayers.size()).append(" 位玩家（明细：/aichat token pm）");
         }
 
         String message = text.toString();

@@ -616,8 +616,33 @@ public final class ConfigManager {
                 + "不要说读不出来或查不到。";
     }
 
-    public static ApiProfile singleProfile() {
+    /**
+     * 私聊模式：{@code off} / {@code admin} / {@code all}。
+     * 写错的值一律当 {@code admin}——宁可少给权限，也不要一句手滑就把私聊开给全服。
+     */
+    public static String privateChatMode() {
         ModConfig current = config;
+        String value = current == null ? null : current.private_chat_mode;
+        if (value == null) {
+            return "admin";
+        }
+        String mode = value.trim().toLowerCase(Locale.ROOT);
+        return switch (mode) {
+            case "off", "admin", "all" -> mode;
+            default -> "admin";
+        };
+    }
+
+    /** /aichat status 用的一句话描述（管理员的判定方式也一并带上）。 */
+    public static String describePrivateChatMode() {
+        return switch (privateChatMode()) {
+            case "off" -> "关（命令不可用）";
+            case "all" -> "开（所有玩家）";
+            default -> "仅管理员（" + ServerToolAccess.describePermission() + "）";
+        };
+    }
+
+    public static ApiProfile singleProfile() {        ModConfig current = config;
         return new ApiProfile(
                 current.api_url,
                 current.api_key,

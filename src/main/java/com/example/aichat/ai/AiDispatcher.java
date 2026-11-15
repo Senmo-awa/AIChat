@@ -19,7 +19,9 @@ import net.minecraft.server.permissions.Permissions;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.ScheduledExecutorService;
@@ -42,6 +44,15 @@ public final class AiDispatcher {
 
     // 最近对话（玩家事件 + AI 回复），请求时作为历史上下文一起发送。
     private static final Deque<ConversationTurn> RECENT = new ArrayDeque<>();
+    /**
+     * 私聊历史：按发起者分开存（key 转小写）。私聊内容不能混进公共历史，
+     * A 的私聊也不该出现在 B 的上下文里。最多保留 {@link #PM_MAX_PLAYERS} 位发起者的历史。
+     */
+    private static final Map<String, Deque<ConversationTurn>> PM_HISTORY =
+            new LinkedHashMap<>(16, 0.75f, true);
+    private static final int PM_MAX_PLAYERS = 32;
+    /** 控制台发起的私聊用这个名字（不是真实玩家，跳过冷却与玩家模式判定）。 */
+    public static final String CONSOLE_SENDER = "控制台";
     private static final AtomicBoolean KEY_WARNED = new AtomicBoolean(false);
     /** 收到 stop 后置位：此后不再提交任何事件、不再广播任何消息。 */
     private static final AtomicBoolean SHUTTING_DOWN = new AtomicBoolean(false);
@@ -148,6 +159,182 @@ public final class AiDispatcher {
         if (StateManager.isDebug()) {
             AiChatMod.LOGGER.info("[debug] 消息进入缓冲：已攒 {} 条 / {} 字符，{} 秒后发送",
                     pending, pendingChars, Math.max(1, ConfigManager.get().buffer_delay_seconds));
+        }
+    }
+
+    /**
+     * 私聊入口（{@code /aichat pm <内容>}）。
+     * <p>
+     * 与公共聊天有意不同：
+     * <ul>
+     *   <li>不参与消息缓冲——私聊是「我问一句它答一句」，等了 5 秒才回没意义；</li>
+     *   <li>不进公共历史，也不读公共历史：私聊内容不该泄到公屏，也不该被别人的聊天带跑；</li>
+     *   <li>回复只发给发起者本人（控制台发起就只打印到控制台）；</li>
+     *   <li>token 记到私聊账本，{@code /aichat token} 里单独一行。</li>
+     * </ul>
+     * 冷却、每日预算、ban、假人过滤仍然生效——私聊不是绕过限流的后门。
+     */
+    public static void submitPrivate(ChatContext ctx) {
+        if (SHUTTING_DOWN.get()) {
+            return;
+        }
+        if (!StateManager.isChatEnabled()) {
+            return;
+        }
+        if (ConfigManager.isIgnoredPlayer(ctx.playerName())) {
+            if (StateManager.isDebug()) {
+                AiChatMod.LOGGER.info("[debug] 忽略玩家 {} 的私聊请求（前缀过滤）", ctx.playerName());
+            }
+            return;
+        }
+        boolean fromConsole = CONSOLE_SENDER.equalsIgnoreCase(ctx.playerName());
+        if (!fromConsole) {
+            if (Guards.onCooldown(ctx.playerName())) {
+                if (StateManager.isDebug()) {
+                    AiChatMod.LOGGER.info("[debug] 玩家冷却中，忽略私聊：{}", ctx.playerName());
+                }
+                return;
+            }
+            if (!StateManager.canReplyTo(ctx.playerName())) {
+                return;
+            }
+        }
+        if (Guards.overDailyBudget()) {
+            return;
+        }
+        if (!ConfigManager.hasUsableApiKey()) {
+            if (KEY_WARNED.compareAndSet(false, true)) {
+                AiChatMod.LOGGER.warn(
+                        "未配置可用的 API Key，AI 回复已暂停（请编辑 config/aichat/config.json 或 system.json）");
+            }
+            return;
+        }
+
+        String key = pmKey(ctx.playerName());
+        WORKER.submit(() -> {
+            try {
+                List<ConversationTurn> history = snapshotPmHistory(key);
+                appendPmHistory(key, "user", ctx.toUserMessage());
+
+                AiResult result = AiClient.ask(ctx, history).join();
+                TokenUsage usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
+
+                if (SHUTTING_DOWN.get()) {
+                    return;
+                }
+
+                if (usage.total() > 0) {
+                    AiChatMod.LOGGER.info(
+                            "AI token 用量（私聊）：prompt={} completion={} total={}（玩家：{}）",
+                            usage.prompt(), usage.completion(), usage.total(), ctx.playerName());
+                    UsageStore.record(ctx.playerName(), ConfigManager.usageModelName(), usage,
+                            UsageStore.CHANNEL_PRIVATE);
+                }
+
+                String replyContent = result.content() == null
+                        ? null
+                        : (ConfigManager.get().redact_secrets
+                                ? SecretRedactor.apply(result.content())
+                                : result.content());
+
+                if (StateManager.isDebug()) {
+                    AiChatMod.LOGGER.info(
+                            "[debug] 私聊解析结果：reply={}，content={}（玩家：{}，历史条数：{}）",
+                            result.reply(), ConsoleSafe.escape(replyContent),
+                            ctx.playerName(), history.size());
+                }
+
+                if (!result.reply() || replyContent == null) {
+                    return;
+                }
+
+                JsonObject historyReply = new JsonObject();
+                if (!ConfigManager.isDualModelEnabled()) {
+                    historyReply.addProperty("action", "reply");
+                }
+                historyReply.addProperty("content", replyContent);
+                appendPmHistory(key, "assistant", GSON.toJson(historyReply));
+
+                MinecraftServer server = currentServer;
+                if (server == null) {
+                    return;
+                }
+                String prefix = ConfigManager.get().reply_prefix;
+                if (prefix == null) {
+                    prefix = "[AI] ";
+                }
+                String line = prefix + replyContent;
+                TokenUsage finalUsage = usage;
+                server.execute(() -> deliverPrivate(server, ctx.playerName(), line, finalUsage));
+            } catch (java.util.concurrent.CancellationException e) {
+                AiChatMod.LOGGER.info("服务器正在关闭，进行中的私聊推理已中止（玩家：{}）", ctx.playerName());
+            } catch (Exception e) {
+                AiChatMod.LOGGER.warn("AI 私聊请求失败: {}", ConsoleSafe.escape(e.getMessage()));
+            }
+        });
+    }
+
+    /** 私聊只发给发起者本人；控制台照样留一行日志（控制台就是服主的眼睛）。 */
+    private static void deliverPrivate(MinecraftServer server, String targetName, String line,
+                                       TokenUsage usage) {
+        if (!StateManager.isChatEnabled() || SHUTTING_DOWN.get()) {
+            return;
+        }
+        Component message = Component.literal(line);
+        boolean toConsole = CONSOLE_SENDER.equalsIgnoreCase(targetName);
+        String consoleLine = toConsole ? "[私聊] " + line : "[私聊→" + targetName + "] " + line;
+        server.sendSystemMessage(Component.literal(ConsoleSafe.drop(consoleLine)));
+
+        ServerPlayer target = findPlayer(server, targetName);
+        if (target == null) {
+            return;
+        }
+        target.sendSystemMessage(message);
+        if (StateManager.isDebug() && usage.total() > 0) {
+            target.sendSystemMessage(Component.literal("[AIChat] 私聊 token: prompt=" + usage.prompt()
+                    + " completion=" + usage.completion()
+                    + " total=" + usage.total()).withStyle(ChatFormatting.GRAY));
+        }
+    }
+
+    private static ServerPlayer findPlayer(MinecraftServer server, String name) {
+        for (ServerPlayer player : server.getPlayerList().getPlayers()) {
+            if (player.getName().getString().equalsIgnoreCase(name)) {
+                return player;
+            }
+        }
+        return null;
+    }
+
+    private static String pmKey(String playerName) {
+        return playerName == null ? "" : playerName.toLowerCase(java.util.Locale.ROOT);
+    }
+
+    private static List<ConversationTurn> snapshotPmHistory(String key) {
+        synchronized (PM_HISTORY) {
+            Deque<ConversationTurn> history = PM_HISTORY.get(key);
+            return history == null ? new ArrayList<>() : new ArrayList<>(history);
+        }
+    }
+
+    private static void appendPmHistory(String key, String role, String content) {
+        if (content == null || content.isBlank()) {
+            return;
+        }
+        synchronized (PM_HISTORY) {
+            Deque<ConversationTurn> history = PM_HISTORY.computeIfAbsent(key, k -> new ArrayDeque<>());
+            history.addLast(new ConversationTurn(role, content));
+            int max = Math.max(0, ConfigManager.get().max_context_messages);
+            while (history.size() > max) {
+                history.removeFirst();
+            }
+            while (PM_HISTORY.size() > PM_MAX_PLAYERS) {
+                String eldest = PM_HISTORY.keySet().iterator().next();
+                if (eldest.equals(key)) {
+                    break;
+                }
+                PM_HISTORY.remove(eldest);
+            }
         }
     }
 
@@ -356,6 +543,13 @@ public final class AiDispatcher {
     public static int historySize() {
         synchronized (RECENT) {
             return RECENT.size();
+        }
+    }
+
+    /** 私聊历史里有几位发起者（/aichat status 用）。 */
+    public static int privateHistoryPlayers() {
+        synchronized (PM_HISTORY) {
+            return PM_HISTORY.size();
         }
     }
 

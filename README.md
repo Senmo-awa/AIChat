@@ -27,6 +27,7 @@
 | 知识库问答 | 把你的服务器介绍、规则、玩法放进 `knowledge/`，它照着回答，不瞎编 | 可开 |
 | 联网搜索 | 问新闻、天气、比分、版本更新时自己上网查 | 可开 |
 | 长期记忆 | 记住玩家说过的事，下次还认得 | 开 |
+| 私聊对话 | `/aichat pm` 单独问它，回复只有自己看得到，不打扰公屏 | 仅管理员 |
 | 服务器管理 | 看日志、列模组、读配置、查目录，帮忙排查故障 | **关** |
 
 默认状态下它只是个会聊天的管理员：不碰文件、不执行指令、不假装成玩家。
@@ -58,6 +59,7 @@
 | `/aichat on` | 正常参与（默认） |
 | `/aichat off` | 既不发给 AI，也看不到 AI 说话 |
 | `/aichat onlyread` | 自己不发给 AI，但能看 AI 说话 |
+| `/aichat pm <内容>` | 私聊问它一句，回复只有自己看得到（范围见 `private_chat_mode`） |
 
 管理员（OP）：
 
@@ -65,7 +67,7 @@
 |---|---|
 | `/aichat reload` | 改完配置热重载 |
 | `/aichat status` | 一屏看当前状态：模型、开关、缓冲、今日用量 |
-| `/aichat token` | 最近 7 天 token 用量 |
+| `/aichat token` | 最近 7 天 token 用量（公屏与私聊分开显示） |
 | `/aichat enable` / `disable` | 全局开关 AI 聊天 |
 | `/aichat debug` | 排查用：聊天框显示用量，接口原始返回写进日志 |
 | `/aichat tools` | 服务器管理工具的状态与权限自查 |
@@ -82,6 +84,7 @@
 | `reply_only_when_mentioned` | 只在被点名（默认「小墨」）时才回话 | 关 |
 | `daily_token_budget` | 每天 token 上限，超了自动停，跨天恢复 | 不限 |
 | `ignored_player_prefixes` | 名字这些开头的当成假人忽略 | `bot_` |
+| `private_chat_mode` | 私聊范围：`off` 关闭 / `admin` 仅管理员 / `all` 所有人 | `admin` |
 | `server_tools_enabled` | 服务器管理工具总开关 | 关 |
 
 ## 常见问题

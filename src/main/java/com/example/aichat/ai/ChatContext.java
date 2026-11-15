@@ -12,14 +12,26 @@ import java.util.stream.Collectors;
  *
  * @param serverTools 是否为「带前缀且已通过权限判定的管理员请求」。true 时这一轮对话才会注册
  *                    服务器管理工具，并且不参与消息缓冲（缓冲区可能把别人的话混进来）。
+ * @param privateChat 是否为私聊请求（{@code /aichat pm}）。true 时回复只发给发起者本人，
+ *                    不进公共历史、不进缓冲区，token 也单独归到「私聊」账本。
  */
 public record ChatContext(
         String playerName,
-        String eventType,   // chat / join / quit / batch
+        String eventType,   // chat / join / quit / batch / pm
         String content,
         long timestamp,
-        boolean serverTools
+        boolean serverTools,
+        boolean privateChat
 ) {
+    public ChatContext(String playerName, String eventType, String content, long timestamp) {
+        this(playerName, eventType, content, timestamp, false, false);
+    }
+
+    public ChatContext(String playerName, String eventType, String content, long timestamp,
+                       boolean serverTools) {
+        this(playerName, eventType, content, timestamp, serverTools, false);
+    }
+
     /**
      * 事件时间戳（{@link System#currentTimeMillis()}）的展示格式。
      * <p>
@@ -29,10 +41,6 @@ public record ChatContext(
      */
     private static final DateTimeFormatter TIME_FORMAT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss EEE", Locale.SIMPLIFIED_CHINESE);
-
-    public ChatContext(String playerName, String eventType, String content, long timestamp) {
-        this(playerName, eventType, content, timestamp, false);
-    }
 
     /** 毫秒时间戳 → {@code 2026-11-14 23:15:38 周六}（服务器本地时区）。 */
     public static String humanTime(long millis) {
@@ -45,10 +53,10 @@ public record ChatContext(
         if ("batch".equals(eventType)) {
             return content;
         }
-        return "玩家名：" + playerName
-                + "｜事件类型：" + eventType
-                + "｜时间：" + humanTime(timestamp)
-                + "｜内容：" + content;
+        String head = "玩家名：" + playerName
+                + "｜事件类型：" + (privateChat ? "pm（私聊，只有你和这位玩家看得到）" : eventType)
+                + "｜时间：" + humanTime(timestamp);
+        return head + "｜内容：" + content;
     }
 
     /**
@@ -74,7 +82,7 @@ public record ChatContext(
 
     /**
      * 把缓冲区里的多条事件拼成一条 user 消息；只有一条时保持原样。
-     * 特权请求不会进缓冲区，所以拼接结果一定是非特权。
+     * 特权请求与私聊不会进缓冲区，所以拼接结果一定是非特权的公共聊天。
      */
     public static ChatContext batch(List<ChatContext> events) {
         if (events.size() == 1) {
@@ -84,6 +92,6 @@ public record ChatContext(
                 .map(ChatContext::toUserMessage)
                 .collect(Collectors.joining("\n"));
         ChatContext first = events.get(0);
-        return new ChatContext(first.playerName(), "batch", joined, first.timestamp(), false);
+        return new ChatContext(first.playerName(), "batch", joined, first.timestamp(), false, false);
     }
 }

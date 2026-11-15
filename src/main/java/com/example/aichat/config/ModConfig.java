@@ -161,6 +161,22 @@ public class ModConfig {
      */
     public boolean redact_secrets = true;
 
+    // ---------------- 私聊（2.0.4 新增） ----------------
+
+    /**
+     * 私聊模式（{@code /aichat pm <内容>}）：
+     * <ul>
+     *   <li>{@code off}：关闭，命令直接拒绝；</li>
+     *   <li>{@code admin}：仅管理员可用（默认）。管理员的判定与服务器管理工具完全共用一套配置——
+     *       {@code server_tools_permission_mode}（op 等级 / 管理员名单 / LuckPerms 节点），
+     *       不额外维护第二份名单；</li>
+     *   <li>{@code all}：所有玩家可用。</li>
+     * </ul>
+     * 私聊的回复只发给发起者本人（控制台发起时只打印到控制台），不进公共聊天历史、不广播；
+     * token 单独记在「私聊」账本里（{@code /aichat token} 分开显示）。
+     */
+    public String private_chat_mode = "admin";
+
     // ---------------- 服务器根目录文件管理工具（2.0.0 新增） ----------------
 
     /**
