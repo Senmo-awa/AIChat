@@ -2,6 +2,7 @@ package com.example.aichat.config;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
+import com.google.gson.JsonNull;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonPrimitive;
 
@@ -52,6 +53,11 @@ public final class ConfigDoc {
             }
             return new Field(key, comment, array);
         }
+
+        /** 直接给原始 JSON 值（数组、对象、null）。 */
+        static Field of(String key, String comment, JsonElement value) {
+            return new Field(key, comment, value);
+        }
     }
 
     /** 一个嵌套对象（system.json 里的 judge / reply）。 */
@@ -68,9 +74,12 @@ public final class ConfigDoc {
             """;
 
     private static final String SYSTEM_HEADER = """
-            // AI Chat 双模型配置（system.json）
+            // AI Chat 模型编排配置（system.json）
             // 以 // 开头的行都是注释，模组读取时会忽略。
-            // dual_model_enabled=true 时，judge 判断要不要接话、reply 负责写回复；留空字段会回落到 config.json。
+            // multi_model_enabled=true 时按下面的 models 列表加载多个模型：
+            //   judge 只判断要不要接话，chat 负责回复（可以多个），admin 接管管理员特权请求。
+            // 每个模型的具体连接参数在自己的 config/aichat/models/<id>/model.json 里，留空即继承 config.json。
+            // 旧的 dual_model_enabled + judge / reply 已弃用，设成 true 仍按老逻辑工作。
             """;
 
     /** config.json 的字段顺序、默认值与注释。 */
@@ -264,8 +273,23 @@ public final class ConfigDoc {
             Field.of("version",
                     "配置文件版本，与 config.json 的 config_version 用同一个模组版本号（如 \"2.0.3\"）。",
                     ConfigManager.CURRENT_SYSTEM_VERSION),
+            Field.of("multi_model_enabled",
+                    "【多模型总开关】true 时按下面的 models 列表加载多个模型：judge 判断要不要接话，chat 负责回复（可以多个），admin 接管管理员特权请求。"
+                            + "每个模型在自己目录里的 model.json 单独配置，api_key 留空就继承 config.json 的那把。",
+                    false),
+            Field.of("models_dir",
+                    "模型配置目录的根（相对 config/aichat/）。每个模型在它下面占一个子目录，第一次启用时模组会自动建目录并写入默认 model.json。",
+                    "models"),
+            Field.of("ai_dialogue_max_rounds",
+                    "模型之间自动对话的最大轮数，0 = 关闭。达到上限的最后一轮会在提问里注入「此轮为最终轮」的提示，让对方知道不会再被接话。",
+                    2),
+            Field.of("models",
+                    "【模型列表】顺序即发言顺序。id 全局唯一，也是 token 统计里的分类名；role 取 judge / chat / admin；"
+                            + "dir 是相对 models_dir 的目录（留空用 id）；routes_to 只对 judge 有效（留空 = 所有 chat 模型）；"
+                            + "reply_to_ai 只对 chat 有效（是否参与 AI 互相对话）。",
+                    defaultModels()),
             Field.of("dual_model_enabled",
-                    "是否启用双模型模式：judge 只判断要不要接话，reply 只负责写回复。留空的字段会回落到 config.json 里的同名配置。",
+                    "【已弃用】旧的双模型开关：judge 判断、reply 回复。2.2.0 起推荐用上面的多模型；这里设为 true 仍按老逻辑工作。",
                     false),
             new Section("judge",
                     "判断模型：只输出 {\"action\":\"reply\"} 或 {\"action\":\"ignore\"}，建议用小模型省钱。",
@@ -288,6 +312,64 @@ public final class ConfigDoc {
                             Field.of("max_output_tokens", "回复输出预算，0 表示用 config.json 的值。", 0),
                             Field.of("thinking_budget_tokens", "Anthropic 思考预算。", 1024)))
     );
+
+    private static final String MODEL_HEADER = """
+            // AI Chat 单个模型的配置（model.json）
+            // 这里的每个字段留空都表示「继承 config.json」：只有一个 Key、一个接口时不用在这里重复填。
+            // 想给某个模型单独用别的 Key / 别的模型名，就在本文件里写死。
+            // 布尔字段可以写 true / false 覆盖，写 null 表示继承。
+            """;
+
+    /** 单个模型 model.json 的字段顺序、默认值与注释。 */
+    public static final List<Object> MODEL_ENTRIES = List.<Object>of(
+            Field.of("version", "配置文件版本（模组版本号）。由模组维护，一般不用改。",
+                    ConfigManager.CURRENT_SYSTEM_VERSION),
+            Field.of("api_url", "对话接口地址。留空继承 config.json 的 api_url。", ""),
+            Field.of("api_key", "API Key。留空继承 config.json 的 api_key；多个模型共用一个 Key 时不必重复填。", ""),
+            Field.of("model", "模型名（如 deepseek-flash / qwen-plus）。留空继承 config.json 的 model。", ""),
+            Field.of("api_type", "协议类型：auto（按地址猜）/ openai / deepseek / anthropic。", "auto"),
+            Field.of("system_prompt_file",
+                    "系统提示词文件名：先在本模型目录里找，找不到就用 config/aichat/ 下的同名文件。",
+                    "system_prompt.txt"),
+            Field.of("persona_prompt_file", "人设文件名，查找规则同上。", "persona_prompt.txt"),
+            Field.of("reply_prefix",
+                    "这个模型回复的前缀，留空用 config.json 的 reply_prefix。启用多个聊天模型时，靠前缀一眼区分是谁在说话。",
+                    ""),
+            Field.of("self_name", "模型之间互相对话时显示的名字，留空用模型 id。", ""),
+            Field.of("max_output_tokens", "最大输出 token，0 = 继承 config.json。", 0),
+            Field.of("thinking_budget_tokens", "Anthropic 的思考预算 token。", 1024),
+            Field.of("enable_thinking", "是否开启深度思考。null = 继承 config.json，true / false 单独覆盖。",
+                    JsonNull.INSTANCE),
+            Field.of("send_thinking_field", "是否发送 thinking 字段。null = 继承 config.json。",
+                    JsonNull.INSTANCE),
+            Field.of("reasoning_effort", "推理强度：low / medium / high；留空继承 config.json。", ""),
+            Field.of("use_json_mode", "是否发送 response_format=json_object。null = 继承 config.json。",
+                    JsonNull.INSTANCE),
+            Field.of("enable_tools", "是否允许本模型使用工具（知识库 / 搜索）。null = 继承 config.json。",
+                    JsonNull.INSTANCE),
+            Field.of("memory_enabled", "是否允许本模型读写记忆。null = 继承 config.json。",
+                    JsonNull.INSTANCE)
+    );
+
+    /** 默认的三个模型：判断 / 聊天 / 管理，全部继承 config.json 的连接参数。 */
+    private static JsonArray defaultModels() {
+        JsonArray models = new JsonArray();
+        models.add(modelEntry("judge", "judge", false));
+        models.add(modelEntry("chat-main", "chat", true));
+        models.add(modelEntry("admin", "admin", false));
+        return models;
+    }
+
+    private static JsonObject modelEntry(String id, String role, boolean replyToAi) {
+        JsonObject object = new JsonObject();
+        object.addProperty("id", id);
+        object.addProperty("role", role);
+        object.addProperty("enabled", true);
+        object.addProperty("dir", "");
+        object.add("routes_to", new JsonArray());
+        object.addProperty("reply_to_ai", replyToAi);
+        return object;
+    }
 
     /** 按字段表生成默认值对象（升级时用来补齐缺失字段）。 */
     public static JsonObject defaults(List<?> entries) {
@@ -356,6 +438,10 @@ public final class ConfigDoc {
         return render(SYSTEM_HEADER, SYSTEM_ENTRIES, values);
     }
 
+    public static String renderModel(JsonObject values) {
+        return render(MODEL_HEADER, MODEL_ENTRIES, values);
+    }
+
     private static String renderField(String indent, String key, String comment,
                                       JsonElement value, JsonElement fallback) {
         StringBuilder block = new StringBuilder();
@@ -400,8 +486,12 @@ public final class ConfigDoc {
         }
     }
 
-    /** 值渲染：字符串加引号转义，数组逐项、单行输出，嵌套对象兜底用紧凑 JSON。 */
+    /** 值渲染：字符串加引号转义，数组/对象多行缩进输出。 */
     public static String format(JsonElement value) {
+        return format(value, "  ");
+    }
+
+    private static String format(JsonElement value, String indent) {
         if (value == null || value.isJsonNull()) {
             return "null";
         }
@@ -409,27 +499,50 @@ public final class ConfigDoc {
             JsonPrimitive primitive = value.getAsJsonPrimitive();
             return primitive.isString() ? quote(primitive.getAsString()) : primitive.getAsString();
         }
+        String inner = indent + "  ";
         if (value.isJsonArray()) {
+            JsonArray array = value.getAsJsonArray();
+            if (array.isEmpty()) {
+                return "[]";
+            }
+            boolean complex = false;
             List<String> parts = new ArrayList<>();
-            for (JsonElement element : value.getAsJsonArray()) {
-                parts.add(format(element));
-            }
-            if (parts.size() > 1) {
-                // 长数组（如路径黑名单）换行更好读
-                StringBuilder multi = new StringBuilder("[\n");
-                for (int i = 0; i < parts.size(); i++) {
-                    multi.append("    ").append(parts.get(i));
-                    if (i < parts.size() - 1) {
-                        multi.append(',');
-                    }
-                    multi.append('\n');
+            for (JsonElement element : array) {
+                if (element.isJsonObject() || element.isJsonArray()) {
+                    complex = true;
                 }
-                multi.append("  ]");
-                return multi.toString();
+                parts.add(format(element, inner));
             }
-            return "[" + String.join(", ", parts) + "]";
+            if (!complex && parts.size() == 1) {
+                return "[" + parts.get(0) + "]";
+            }
+            StringBuilder multi = new StringBuilder("[\n");
+            for (int i = 0; i < parts.size(); i++) {
+                multi.append(inner).append(parts.get(i));
+                if (i < parts.size() - 1) {
+                    multi.append(',');
+                }
+                multi.append('\n');
+            }
+            multi.append(indent).append("]");
+            return multi.toString();
         }
-        return value.toString();
+        JsonObject object = value.getAsJsonObject();
+        if (object.isEmpty()) {
+            return "{}";
+        }
+        StringBuilder block = new StringBuilder("{\n");
+        int index = 0;
+        for (Map.Entry<String, JsonElement> entry : object.entrySet()) {
+            block.append(inner).append(quote(entry.getKey())).append(": ")
+                    .append(format(entry.getValue(), inner));
+            if (++index < object.size()) {
+                block.append(',');
+            }
+            block.append('\n');
+        }
+        block.append(indent).append("}");
+        return block.toString();
     }
 
     private static String quote(String raw) {

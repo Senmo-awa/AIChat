@@ -227,6 +227,24 @@ public final class UsageStore {
 
     /** 指定账本按玩家汇总（总量从大到小）。 */
     public static List<PlayerUsage> byPlayer(int days, String channel) {
+        return aggregate(days, channel, "player");
+    }
+
+    /**
+     * 按模型汇总（多模型模式用）：{@code model} 字段记的是模型 id。
+     * 公屏与私聊一起算——看的是「哪个模型在花钱」。
+     */
+    public static List<ModelUsage> byModel(int days) {
+        List<PlayerUsage> raw = aggregate(days, null, "model");
+        List<ModelUsage> result = new ArrayList<>(raw.size());
+        for (PlayerUsage usage : raw) {
+            result.add(new ModelUsage(usage.player(), usage.prompt(), usage.completion(),
+                    usage.total(), usage.requests()));
+        }
+        return result;
+    }
+
+    private static List<PlayerUsage> aggregate(int days, String channel, String field) {
         LocalDate from = days > 0 ? LocalDate.now().minusDays(days - 1L) : null;
         Map<String, long[]> buckets = new LinkedHashMap<>();
 
@@ -235,7 +253,7 @@ public final class UsageStore {
             if (path != null && Files.exists(path)) {
                 try {
                     for (String line : Files.readAllLines(path, StandardCharsets.UTF_8)) {
-                        accumulatePlayer(line, from, buckets, channel);
+                        accumulateKey(line, from, buckets, channel, field);
                     }
                 } catch (IOException e) {
                     AiChatMod.LOGGER.warn("读取 token 用量失败: {}", e.getMessage());
@@ -287,6 +305,11 @@ public final class UsageStore {
 
     private static void accumulatePlayer(String line, LocalDate from, Map<String, long[]> buckets,
                                          String channel) {
+        accumulateKey(line, from, buckets, channel, "player");
+    }
+
+    private static void accumulateKey(String line, LocalDate from, Map<String, long[]> buckets,
+                                      String channel, String field) {
         if (line == null || line.isBlank()) {
             return;
         }
@@ -310,10 +333,10 @@ public final class UsageStore {
                     return;
                 }
             }
-            String player = object.has("player") && !object.get("player").isJsonNull()
-                    ? object.get("player").getAsString()
+            String label = object.has(field) && !object.get(field).isJsonNull()
+                    ? object.get(field).getAsString()
                     : "（未知）";
-            long[] bucket = buckets.computeIfAbsent(player, k -> new long[4]);
+            long[] bucket = buckets.computeIfAbsent(label, k -> new long[4]);
             bucket[0] += readLong(object, "prompt");
             bucket[1] += readLong(object, "completion");
             bucket[2] += readLong(object, "total");
@@ -351,5 +374,9 @@ public final class UsageStore {
     }
 
     public record PlayerUsage(String player, long prompt, long completion, long total, int requests) {
+    }
+
+    /** 按模型汇总的一行（多模型模式）。 */
+    public record ModelUsage(String model, long prompt, long completion, long total, int requests) {
     }
 }

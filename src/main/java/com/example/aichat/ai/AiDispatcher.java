@@ -216,19 +216,30 @@ public final class AiDispatcher {
                 List<ConversationTurn> history = snapshotPmHistory(key);
                 appendPmHistory(key, "user", ctx.toUserMessage());
 
-                AiResult result = AiClient.ask(ctx, history).join();
-                TokenUsage usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
+                AiResult result;
+                TokenUsage usage;
+                if (ConfigManager.isMultiModelEnabled()) {
+                    // 私聊是一对一：不跑判断模型，直接挑一个模型回答（特权请求走管理模型）
+                    com.example.aichat.model.ModelSpec spec = MultiModelChat.pickForPrivate(ctx);
+                    if (spec == null) {
+                        return;
+                    }
+                    result = MultiModelChat.answerDirect(spec, ctx, history, UsageStore.CHANNEL_PRIVATE);
+                    usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
+                } else {
+                    result = AiClient.ask(ctx, history).join();
+                    usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
+                    if (usage.total() > 0 && !SHUTTING_DOWN.get()) {
+                        AiChatMod.LOGGER.info(
+                                "AI token 用量（私聊）：prompt={} completion={} total={}（玩家：{}）",
+                                usage.prompt(), usage.completion(), usage.total(), ctx.playerName());
+                        UsageStore.record(ctx.playerName(), ConfigManager.usageModelName(), usage,
+                                UsageStore.CHANNEL_PRIVATE);
+                    }
+                }
 
                 if (SHUTTING_DOWN.get()) {
                     return;
-                }
-
-                if (usage.total() > 0) {
-                    AiChatMod.LOGGER.info(
-                            "AI token 用量（私聊）：prompt={} completion={} total={}（玩家：{}）",
-                            usage.prompt(), usage.completion(), usage.total(), ctx.playerName());
-                    UsageStore.record(ctx.playerName(), ConfigManager.usageModelName(), usage,
-                            UsageStore.CHANNEL_PRIVATE);
                 }
 
                 String replyContent = result.content() == null
@@ -401,6 +412,11 @@ public final class AiDispatcher {
                 List<ConversationTurn> history = snapshotHistory();
                 appendHistory("user", batch.toUserMessage());
 
+                if (ConfigManager.isMultiModelEnabled()) {
+                    runMultiModel(batch, history);
+                    return;
+                }
+
                 AiResult result = AiClient.ask(batch, history).join();
                 TokenUsage usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
 
@@ -461,6 +477,36 @@ public final class AiDispatcher {
                 AiChatMod.LOGGER.info("服务器正在关闭，进行中的 AI 推理已中止（玩家：{}）", batch.playerName());
             } catch (Exception e) {
                 AiChatMod.LOGGER.warn("AI 请求失败: {}", ConsoleSafe.escape(e.getMessage()));
+            }
+        });
+    }
+
+    /**
+     * 多模型路径：编排、逐模型记账、互相对话都在 {@link MultiModelChat} 里完成，
+     * 这里只负责把结果按各自的前缀广播出去、并写进公共历史。
+     */
+    private static void runMultiModel(ChatContext batch, List<ConversationTurn> history) {
+        List<MultiModelChat.ModelReply> replies = MultiModelChat.run(batch, history);
+        if (SHUTTING_DOWN.get() || replies.isEmpty()) {
+            if (StateManager.isDebug() && replies.isEmpty()) {
+                AiChatMod.LOGGER.info("[debug] 多模型：本次没有产生回复（玩家：{}）", batch.playerName());
+            }
+            return;
+        }
+        for (MultiModelChat.ModelReply reply : replies) {
+            JsonObject historyReply = new JsonObject();
+            historyReply.addProperty("action", "reply");
+            historyReply.addProperty("content", reply.content());
+            appendHistory("assistant", GSON.toJson(historyReply));
+        }
+        MinecraftServer server = currentServer;
+        if (server == null) {
+            return;
+        }
+        server.execute(() -> {
+            for (MultiModelChat.ModelReply reply : replies) {
+                String prefix = reply.prefix() == null ? "" : reply.prefix();
+                broadcast(server, prefix + reply.content(), TokenUsage.ZERO);
             }
         });
     }

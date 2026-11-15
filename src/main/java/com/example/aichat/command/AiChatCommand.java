@@ -6,6 +6,8 @@ import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
 import com.example.aichat.guard.Guards;
 import com.example.aichat.memory.MemoryStore;
+import com.example.aichat.model.ModelRegistry;
+import com.example.aichat.model.ModelSpec;
 import com.example.aichat.servertools.ServerToolAccess;
 import com.example.aichat.state.PlayerMode;
 import com.example.aichat.state.StateManager;
@@ -46,6 +48,8 @@ public final class AiChatCommand {
                         .executes(ctx -> showTokens(ctx.getSource()))
                         .then(Commands.literal("pm")
                                 .executes(ctx -> showPrivateTokens(ctx.getSource())))
+                        .then(Commands.literal("model")
+                                .executes(ctx -> showModelTokens(ctx.getSource())))
                         .then(Commands.literal("clear")
                                 .executes(ctx -> clearTokens(ctx.getSource(), false))
                                 .then(Commands.literal("all")
@@ -108,6 +112,9 @@ public final class AiChatCommand {
                 .then(Commands.literal("status")
                         .requires(ADMIN)
                         .executes(ctx -> showStatus(ctx.getSource())))
+                .then(Commands.literal("models")
+                        .requires(ADMIN)
+                        .executes(ctx -> showModels(ctx.getSource())))
                 .then(Commands.literal("reload")
                         .requires(ADMIN)
                         .executes(ctx -> reload(ctx.getSource())))
@@ -165,7 +172,7 @@ public final class AiChatCommand {
         source.sendSuccess(() -> Component.literal(
                 "模型：" + config.model
                         + "｜协议：" + config.api_type
-                        + "｜双模型：" + (ConfigManager.isDualModelEnabled() ? "开" : "关")
+                        + "｜模式：" + modelModeLabel()
                         + "｜工具：" + (config.enable_tools ? "开" : "关")), false);
         source.sendSuccess(() -> Component.literal(
                 "今日 token：" + today + " / 预算 " + budget + "（剩 " + remain + "）"
@@ -231,6 +238,72 @@ public final class AiChatCommand {
         return 1;
     }
 
+    /** /aichat models：多模型编排一览（角色、模型名、目录、路由、Key/接口是否继承主配置）。 */
+    private static int showModels(CommandSourceStack source) {
+        if (!ConfigManager.isMultiModelEnabled()) {
+            source.sendSuccess(() -> Component.literal(
+                    "多模型未启用（system.json 里把 multi_model_enabled 设为 true 后 /aichat reload）。当前是"
+                            + modelModeLabel() + "。每个模型的配置在 config/aichat/models/<id>/model.json。"), false);
+            return 0;
+        }
+        List<ModelSpec> models = ModelRegistry.all();
+        StringBuilder text = new StringBuilder("多模型（" + models.size() + " 个，AI 互相对话最多 "
+                + ConfigManager.aiDialogueMaxRounds() + " 轮）：");
+        String mainKey = ConfigManager.get().api_key;
+        String mainUrl = ConfigManager.get().api_url;
+        for (ModelSpec spec : models) {
+            text.append("\n - ").append(spec.id())
+                    .append(" [").append(spec.role().label()).append("]  ")
+                    .append(spec.model())
+                    .append("｜Key：").append(spec.apiKey() != null && spec.apiKey().equals(mainKey) ? "继承" : "独立")
+                    .append("｜接口：").append(spec.apiUrl() != null && spec.apiUrl().equals(mainUrl) ? "继承" : "独立")
+                    .append("｜目录：").append(relativeDir(spec.dir()));
+            if (spec.role() == ModelSpec.Role.JUDGE) {
+                text.append("｜路由：")
+                        .append(spec.routesTo().isEmpty() ? "全部 chat" : spec.routesTo().toString());
+            } else if (spec.role() == ModelSpec.Role.CHAT) {
+                text.append(spec.replyToAi() ? "｜参与 AI 对话" : "｜不参与 AI 对话");
+            }
+        }
+        String message = text.toString();
+        source.sendSuccess(() -> Component.literal(message), false);
+        return models.size();
+    }
+
+    private static String relativeDir(java.nio.file.Path dir) {
+        try {
+            return ConfigManager.dir().relativize(dir).toString().replace('\\', '/');
+        } catch (RuntimeException e) {
+            return dir.toString();
+        }
+    }
+
+    /** /aichat token model：多模型模式下按模型看谁在花钱。 */
+    private static int showModelTokens(CommandSourceStack source) {
+        List<UsageStore.ModelUsage> models = UsageStore.byModel(7);
+        StringBuilder text = new StringBuilder("最近 7 天按模型分类的 token：");
+        if (models.isEmpty()) {
+            text.append("\n（暂无记录）");
+        } else {
+            long total = 0;
+            int requests = 0;
+            for (UsageStore.ModelUsage model : models) {
+                text.append('\n').append(model.model())
+                        .append("  ").append(format(model.prompt()))
+                        .append(" + ").append(format(model.completion()))
+                        .append(" = ").append(format(model.total()))
+                        .append(" tokens，").append(model.requests()).append(" 次");
+                total += model.total();
+                requests += model.requests();
+            }
+            text.append("\n合计：").append(format(total)).append(" tokens，")
+                    .append(requests).append(" 次请求");
+        }
+        String message = text.toString();
+        source.sendSuccess(() -> Component.literal(message), false);
+        return models.size();
+    }
+
     /**
      * /aichat pm &lt;内容&gt;：私聊问 AI 一句，回复只发给自己。
      * <p>
@@ -247,11 +320,14 @@ public final class AiChatCommand {
         }
         ServerPlayer player = source.getPlayer();
         String sender;
+        boolean admin;
         if (player == null) {
             sender = AiDispatcher.CONSOLE_SENDER;
+            admin = true;
         } else {
             sender = player.getName().getString();
-            if ("admin".equals(mode) && !ServerToolAccess.isModerator(player)) {
+            admin = ServerToolAccess.isModerator(player);
+            if ("admin".equals(mode) && !admin) {
                 source.sendFailure(Component.literal(
                         "私聊目前仅管理员可用（private_chat_mode=admin）。管理员判定沿用 server_tools_permission_mode。"));
                 return 0;
@@ -268,8 +344,12 @@ public final class AiChatCommand {
             return 0;
         }
         source.sendSuccess(() -> Component.literal("你对小墨私聊说：" + content), false);
+        // debug 模式下管理员可以在私聊里使用服务器管理工具：这是一条不惊动公屏的排查通道
+        // （普通玩家即使开着 debug 也拿不到工具，admin 判定与私聊可用范围各自独立）。
+        boolean tools = StateManager.isDebug() && admin
+                && ServerToolAccess.active();
         AiDispatcher.submitPrivate(new ChatContext(
-                sender, "pm", content, System.currentTimeMillis(), false, true));
+                sender, "pm", content, System.currentTimeMillis(), tools, true));
         return 1;
     }
 
@@ -280,8 +360,10 @@ public final class AiChatCommand {
                 管理员命令：
                 /aichat token —— 最近 7 天 token 用量（公屏与私聊分开统计）
                 /aichat token pm —— 私聊 token 按玩家明细
+                /aichat token model —— 最近 7 天按模型分类的 token（多模型）
                 /aichat token clear —— 清空公屏统计（私聊记录保留）
                 /aichat token clear all —— 连私聊一起清空
+                /aichat models —— 多模型编排状态（角色 / 模型名 / 目录 / 路由）
                 /aichat reload —— 热重载配置文件
                 /aichat enable|disable —— 全局开启/关闭 AI 聊天
                 /aichat debug —— 切换调试模式（聊天框 token 用量 + 日志原始响应）
@@ -507,5 +589,13 @@ public final class AiChatCommand {
 
     private static String format(long value) {
         return String.format("%,d", value);
+    }
+
+    /** 当前模式的一句话描述：单模型 / 双模型（旧）/ 多模型 N 个。 */
+    private static String modelModeLabel() {
+        if (ConfigManager.isMultiModelEnabled()) {
+            return "多模型 " + ModelRegistry.all().size() + " 个";
+        }
+        return ConfigManager.isDualModelEnabled() ? "双模型（旧）" : "单模型";
     }
 }

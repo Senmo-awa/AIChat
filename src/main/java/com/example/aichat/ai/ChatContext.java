@@ -53,6 +53,11 @@ public record ChatContext(
         if ("batch".equals(eventType)) {
             return content;
         }
+        if ("ai".equals(eventType)) {
+            // 模型之间的对话：没有「玩家」，是另一位 AI 的发言
+            return "AI 同伴「" + playerName + "」说｜时间：" + humanTime(timestamp)
+                    + "｜内容：" + content;
+        }
         String head = "玩家名：" + playerName
                 + "｜事件类型：" + (privateChat ? "pm（私聊，只有你和这位玩家看得到）" : eventType)
                 + "｜时间：" + humanTime(timestamp);

@@ -68,11 +68,31 @@ public final class AiClient {
     }
 
     /**
+     * 单次请求：给定 profile 和 user 消息，跑完工具轮次并解析结果。
+     * 多模型编排按模型逐个调用它；usage 由调用方按模型记账。
+     */
+    public static AiResult askOnce(ApiProfile profile, ChatContext ctx, String userMessage,
+                                   List<ConversationTurn> history, boolean allowProseRepair) {
+        ToolRun run = new ToolRun(ctx.playerName(), ctx.serverTools());
+        RawResult raw = dispatch(profile, userMessage, history, run, allowProseRepair).join();
+        warnIfPrivilegedWithoutTools(ctx, run);
+        return parseReply(raw.text(), raw.usage());
+    }
+
+    /**
      * 特权请求一次工具都没调，通常说明模型没注意到 server_files（实测小模型会答“我没权限”）。
      * 这不是致命错误，但主人排查时最需要这条线索，所以在日志里点名。
      */
     private static void warnIfPrivilegedWithoutTools(ChatContext ctx, ToolRun run) {
         if (!ctx.serverTools()) {
+            return;
+        }
+        // 私聊里的特权请求常常只是「问一句」，没调工具是常态，不打扰日志
+        if (ctx.privateChat()) {
+            if (StateManager.isDebug() && run.calls() > 0) {
+                AiChatMod.LOGGER.info("[debug] 私聊特权请求调用工具 {} 次，回灌 {} 字符",
+                        run.calls(), run.resultCharsUsed());
+            }
             return;
         }
         if (run.calls() == 0) {

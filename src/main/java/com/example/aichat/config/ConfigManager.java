@@ -122,6 +122,8 @@ public final class ConfigManager {
                 Files.createDirectories(modConfigDir.resolve(loaded.memory_dir));
             }
             ServerToolAccess.reloadAdminList();
+            // 多模型：按 system.json 的 models 列表准备各模型目录与 model.json
+            com.example.aichat.model.ModelRegistry.reload();
         } catch (IOException | JsonParseException e) {
             throw new RuntimeException("无法加载 AI Chat 配置: " + e.getMessage(), e);
         }
@@ -553,12 +555,42 @@ public final class ConfigManager {
     }
 
     public static String readPersonaPrompt() throws IOException {
+        ModConfig current = config;
+        return readPersonaPrompt(current == null || current.persona_prompt_file == null
+                ? DEFAULT_PERSONA_FILE
+                : current.persona_prompt_file);
+    }
+
+    private static String readPersonaPrompt(String personaFileName) throws IOException {
         Path base = modConfigDir.normalize();
-        Path file = base.resolve(config.persona_prompt_file).normalize();
+        Path file = base.resolve(personaFileName).normalize();
         if (!file.startsWith(base) || !Files.isRegularFile(file)) {
             return "";
         }
         return Files.readString(file, StandardCharsets.UTF_8);
+    }
+
+    /** 模型目录优先，找不到回落主配置目录；读不到就返回空串（不让人设缺失拖垮整个请求）。 */
+    private static String readPersonaPrompt(Path baseDir, String personaFileName) {
+        String name = personaFileName == null || personaFileName.isBlank()
+                ? DEFAULT_PERSONA_FILE
+                : personaFileName;
+        if (baseDir != null) {
+            Path base = baseDir.normalize();
+            Path candidate = base.resolve(name).normalize();
+            if (candidate.startsWith(base) && Files.isRegularFile(candidate)) {
+                try {
+                    return Files.readString(candidate, StandardCharsets.UTF_8);
+                } catch (IOException ignored) {
+                    // 落回主目录
+                }
+            }
+        }
+        try {
+            return readPersonaPrompt(name);
+        } catch (IOException e) {
+            return "";
+        }
     }
 
     /**
@@ -569,20 +601,35 @@ public final class ConfigManager {
     }
 
     /**
-     * 读取提示词模板。
-     *
-     * @param toolGuides 是否在末尾追加工具说明（记忆 + 服务器管理工具）。这些规则由模组生成、
-     *                   不写进用户的 system_prompt.txt：升级时不会覆盖别人改过的提示词，
-     *                   也避免给只有判断任务的 judge 塞它用不到的说明。
+     * 读取提示词模板并替换知识库列表、人设占位符（不带工具说明，判断模型用这个）。
      */
     public static String readPrompt(String fileName, boolean toolGuides) {
+        ModConfig current = config;
+        return readPrompt(null, fileName,
+                current == null ? DEFAULT_PERSONA_FILE : current.persona_prompt_file, toolGuides);
+    }
+
+    /**
+     * 读取提示词模板，支持「先找模型目录、再回落主配置目录」。
+     * <p>
+     * 多模型的每个模型可以自带一份提示词：放在自己目录里就是它独有的语气与规则，
+     * 不放在目录里就沿用 config/aichat/ 下的那一份。工具说明和当前时间仍由代码负责拼接，
+     * 所以模型目录里的提示词文件不需要重复写这些。  *
+     * @param baseDir         模型配置目录；{@code null} 表示只用主配置目录
+     * @param systemPromptFile 提示词文件名
+     * @param personaPromptFile 人设文件名
+     * @param toolGuides      是否追加工具说明（记忆 + 服务器管理）
+     */
+    public static String readPrompt(java.nio.file.Path baseDir, String systemPromptFile,
+                                    String personaPromptFile, boolean toolGuides) {
         try {
-            String template = Files.readString(modConfigDir.resolve(fileName), StandardCharsets.UTF_8);
+            java.nio.file.Path file = resolvePromptFile(baseDir, systemPromptFile);
+            String template = Files.readString(file, StandardCharsets.UTF_8);
             String files = String.join("\n", KnowledgeReader.listFiles());
             if (files.isBlank()) {
                 files = "（无）";
             }
-            String persona = readPersonaPrompt();
+            String persona = readPersonaPrompt(baseDir, personaPromptFile);
             String prompt = template
                     .replace("{KNOWLEDGE_FILE_LIST}", files)
                     .replace("{PERSONA_PROMPT}", persona);
@@ -594,8 +641,21 @@ public final class ConfigManager {
             }
             return prompt + currentTimeSection();
         } catch (IOException e) {
-            throw new RuntimeException("读取提示词文件失败: " + fileName, e);
+            throw new RuntimeException("读取提示词文件失败: " + systemPromptFile, e);
         }
+    }
+
+    /** 模型目录里优先，找不到再回落到主配置目录。 */
+    private static java.nio.file.Path resolvePromptFile(java.nio.file.Path baseDir, String fileName) {
+        String name = fileName == null || fileName.isBlank() ? DEFAULT_SYSTEM_PROMPT_FILE : fileName;
+        if (baseDir != null) {
+            java.nio.file.Path base = baseDir.normalize();
+            java.nio.file.Path candidate = base.resolve(name).normalize();
+            if (candidate.startsWith(base) && Files.isRegularFile(candidate)) {
+                return candidate;
+            }
+        }
+        return modConfigDir.resolve(name);
     }
 
     /**
@@ -640,6 +700,46 @@ public final class ConfigManager {
             case "all" -> "开（所有玩家）";
             default -> "仅管理员（" + ServerToolAccess.describePermission() + "）";
         };
+    }
+
+    /**
+     * 多模型是否生效：开关打开 <b>且</b> 至少加载到一个模型。
+     * 只开开关却没配模型时回落到单模型，避免整台服务器忽然没人说话。
+     */
+    public static boolean isMultiModelEnabled() {
+        SystemConfig system = systemConfig;
+        return system != null && system.multi_model_enabled
+                && com.example.aichat.model.ModelRegistry.active();
+    }
+
+    /** 模型之间自动对话的最大轮数（0 = 关闭，最多 10 轮防跑飞）。 */
+    public static int aiDialogueMaxRounds() {
+        SystemConfig system = systemConfig;
+        if (system == null) {
+            return 0;
+        }
+        return Math.max(0, Math.min(10, system.ai_dialogue_max_rounds));
+    }
+
+    /** 用一个 {@link com.example.aichat.model.ModelSpec} 拼出协议层要的请求参数。 */
+    public static ApiProfile profileFor(com.example.aichat.model.ModelSpec spec) {
+        ModConfig current = config;
+        return new ApiProfile(
+                spec.apiUrl(),
+                spec.apiKey(),
+                spec.model(),
+                spec.apiType(),
+                readPrompt(spec.dir(), spec.systemPromptFile(), spec.personaPromptFile(), true),
+                spec.enableTools(),
+                spec.memoryEnabled(),
+                spec.useJsonMode(),
+                spec.enableThinking(),
+                spec.sendThinkingField(),
+                spec.reasoningEffort(),
+                spec.maxOutputTokens(),
+                spec.thinkingBudgetTokens(),
+                current != null && current.system_prompt_in_user
+        );
     }
 
     public static ApiProfile singleProfile() {        ModConfig current = config;

@@ -50,6 +50,19 @@
 
 另外内置了一份拒绝清单（`server.properties`、`ops.json`、`whitelist.json`、`banned-*`、`usercache.json`、`config/aichat`），改配置也关不掉——API 密钥和封禁名单不会被念到公屏。广播回复前还会自动抹掉 `sk-` 开头的密钥和 `password=` 之类的片段。
 
+## 多模型（进阶）
+
+想让「谁该接话」和「谁来说话」分工，或者让几位性格不同的 AI 同时在场，就打开多模型：
+
+1. 把 `system.json` 的 `multi_model_enabled` 改成 `true`。
+2. 在同一个文件的 `models` 里写清楚每个模型：`id`（唯一名字）、`role`（`judge` 判断 / `chat` 回复 / `admin` 管理员请求）、`routes_to`（判断通过后交给谁）。
+3. `/aichat reload`。模组会在 `config/aichat/models/<id>/` 下自动生成一份带注释的 `model.json`，填上各自想用的模型名或 Key 即可——留空就继承主配置。
+
+- 多个 `chat` 模型会同时发言，各带自己的 `reply_prefix`，一眼能分清是谁说的。
+- 打开 `reply_to_ai` 的模型会接其它 AI 的话，轮数由 `ai_dialogue_max_rounds` 限制（默认 2，最后一轮会自动提示它收尾），不会无限对聊。
+- 没有 `judge` 就每条消息都回；没有 `admin` 则管理员请求退回交给 `chat`——少配一个角色不会让 AI 哑掉。
+- `/aichat models` 看编排状态，`/aichat token model` 看每个模型各花了多少 token。
+
 ## 常用命令
 
 所有玩家：
@@ -68,6 +81,9 @@
 | `/aichat reload` | 改完配置热重载 |
 | `/aichat status` | 一屏看当前状态：模型、开关、缓冲、今日用量 |
 | `/aichat token` | 最近 7 天 token 用量（公屏与私聊分开显示） |
+| `/aichat token pm` | 私聊用量按玩家明细 |
+| `/aichat token model` | 按模型分类的用量（多模型） |
+| `/aichat models` | 多模型编排状态 |
 | `/aichat enable` / `disable` | 全局开关 AI 聊天 |
 | `/aichat debug` | 排查用：聊天框显示用量，接口原始返回写进日志 |
 | `/aichat tools` | 服务器管理工具的状态与权限自查 |

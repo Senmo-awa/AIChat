@@ -1,6 +1,32 @@
-# Changelog
+## 2.2.0 - 未发布
 
-## 2.0.4 - 未发布
+### Added
+
+- **多模型编排（取代双模型）**：`system.json` 的 `multi_model_enabled` 打开后，按 `models` 列表加载任意多个模型，每个模型一个独立配置目录（`config/aichat/models/<id>/`）。reload 时遇到没见过的模型会自动建目录并写入一份带注释的 `model.json`，已经存在的配置一律不动。
+  - **三种角色**：`judge` 只判断要不要接话；`chat` 真正写回复（可配多个，同时发言）；`admin` 接管管理员特权请求（`!+` 前缀或私聊特权）。没有 admin 模型时特权请求退回 chat，没有 judge 模型时每条消息都回复——少配一个角色不会让 AI 哑掉。
+  - **Key 可继承可独立**：`model.json` 里 `api_url` / `api_key` / `model` 留空即继承 `config.json`；布尔字段写 `null` 继承、写 `true`/`false` 覆盖。判断模型默认关思考——推理模型的思考会吃光输出预算，content 变空就会永远判成「不回复」。
+  - **提示词可按模型覆盖**：模型目录里放同名 `system_prompt.txt` / `persona_prompt.txt` 就优先用它，没放则回落 `config/aichat/` 下的那一份；工具说明与当前时间仍由模组拼接。
+  - **路由**：judge 的 `routes_to` 决定「判为回复后交给哪些 chat 模型」，留空 = 全部 chat；多个 judge 的结论取并集，同一个 chat 模型不会重复回复。
+  - **模型互相对话**：一批回复发出后，其它 `reply_to_ai=true` 的 chat 模型会把它当作「AI 同伴的发言」接着聊，最多 `ai_dialogue_max_rounds` 轮（默认 2，单次事件最多 8 条 AI 回复防跑飞）。最后一轮的提问里会注入「此轮为 AI 对话最终轮数，接下来对方回复你后（你回复后）将不会进行新一轮对话，除非有玩家消息干预」，让模型知道该收尾。
+  - **按模型记账**：`usage.jsonl` 的 `model` 字段记的是模型 id，`/aichat token model` 看每个模型各花了多少；`/aichat models` 一屏看编排状态（角色 / 模型名 / 目录 / 接口与 Key 是否继承 / 路由）。
+  - `config.json` / `system.json` 的数组渲染支持嵌套对象（`models` 是多行缩进的），手改时不容易看花眼。
+
+- **debug 模式下管理员可通过 `/aichat pm` 调用服务器管理工具**：给服主一条不惊动公屏的排查通道。三个条件同时满足才生效——`server_tools_enabled` 打开、debug 打开、发送者通过管理员判定。
+- **私聊 `/aichat pm <内容>`**：不打扰公屏的 AI 私聊，回复只有发起者本人看得到（控制台发起时只打印在控制台）。
+  - 可用范围由 `private_chat_mode` 决定：`off` 关闭 / `admin` 仅管理员（默认）/ `all` 所有人。管理员判定**完全复用** `server_tools_permission_mode` 那一套（op 等级 / `server_admins.json` 名单 / LuckPerms 节点），不另立第二份名单。
+  - 控制台可以直接执行，等于自带一条「不惊动玩家」的自检通道；私聊内容上限 1000 字。
+  - 私聊不参与消息缓冲（问了就要答），不进公共历史、也不读公共历史——私聊内容不会漏到公屏，也不会被别人的聊天带偏；每位发起者单独一份上下文（最多保留 32 位）。
+  - 冷却、每日预算、ban、假人前缀过滤对私聊同样生效，不是绕过限流的后门。
+
+- **token 账本分「公屏 / 私聊」两条**：`usage.jsonl` 每行新增 `channel` 字段（`public` / `pm`），旧记录没有该字段，一律按公屏处理，升级不丢历史。
+  - `/aichat token` 表格仍统计公屏，末尾追加「私聊（最近 7 天）：N tokens / M 次」。
+  - `/aichat token pm`：私聊按玩家明细（总量从大到小），方便看「谁在私聊烧 token」。
+  - `/aichat token clear` 只清公屏，私聊记录保留；`/aichat token clear all` 才连私聊一起清。清空仍会先备份成 `usage-<时间戳>.jsonl`。
+  - 每日预算 `daily_token_budget` 统计的是**总花费**（公屏 + 私聊），预算面前一视同仁。
+
+- **提示词末尾自动附加「当前时间」**：`ConfigManager.readPrompt()` 在渲染时追加一行 `【当前时间】2026-11-15 16:51:39 周六（时区 Asia/Shanghai，UTC+08:00）`，并说明事件消息里的「时间」字段用的是同一种格式。只有事件时间的话，模型知道「某件事发生在什么时候」，却不知道「现在」是几点——被问「现在几点」「三天前」时无从下手。
+  - 在渲染期拼接、不写进 `system_prompt.txt`：升级不会覆盖玩家自己维护的提示词，每轮请求拿到的也是当前时间而非加载时的旧值。
+  - 判断模型（judge）同样带上，无副作用。
 
 ### Fixed
 
@@ -8,24 +34,9 @@
   - 用 `DateTimeFormatter` + `ZoneId.systemDefault()`，服务器时区就是输出时区；历史记录与当前消息同源（都走 `toUserMessage()`），一起生效。
   - 新增 `ChatContext.humanTime(long)`，其他地方需要展示时间可以直接复用。
 
-### Added
-
-- **私聊 `/aichat pm <内容>`**：不打扰公屏的 AI 私聊，回复只有发起者本人看得到（控制台发起时只打印在控制台）。
-  - 可用范围由 `private_chat_mode` 决定：`off` 关闭 / `admin` 仅管理员（默认）/ `all` 所有人。管理员判定**完全复用** `server_tools_permission_mode` 那一套（op 等级 / `server_admins.json` 名单 / LuckPerms 节点），不另立第二份名单。
-  - 控制台可以直接执行，等于自带一条「不惊动玩家」的自检通道；私聊内容上限 1000 字。
-  - 私聊不参与消息缓冲（问了就要答），不进公共历史、也不读公共历史——私聊内容不会漏到公屏，也不会被别人的聊天带偏；每位发起者单独一份上下文（最多保留 32 位）。
-  - 冷却、每日预算、ban、假人前缀过滤对私聊同样生效，不是绕过限流的后门。
-- **token 账本分「公屏 / 私聊」两条**：`usage.jsonl` 每行新增 `channel` 字段（`public` / `pm`），旧记录没有该字段，一律按公屏处理，升级不丢历史。
-  - `/aichat token` 表格仍统计公屏，末尾追加「私聊（最近 7 天）：N tokens / M 次」。
-  - `/aichat token pm`：私聊按玩家明细（总量从大到小），方便看「谁在私聊烧 token」。
-  - `/aichat token clear` 只清公屏，私聊记录保留；`/aichat token clear all` 才连私聊一起清。清空仍会先备份成 `usage-<时间戳>.jsonl`。
-  - 每日预算 `daily_token_budget` 统计的是**总花费**（公屏 + 私聊），预算面前一视同仁。
-- **提示词末尾自动附加「当前时间」**：`ConfigManager.readPrompt()` 在渲染时追加一行 `【当前时间】2026-11-15 16:51:39 周六（时区 Asia/Shanghai，UTC+08:00）`，并说明事件消息里的「时间」字段用的是同一种格式。只有事件时间的话，模型知道「某件事发生在什么时候」，却不知道「现在」是几点——被问「现在几点」「三天前」时无从下手。
-  - 在渲染期拼接、不写进 `system_prompt.txt`：升级不会覆盖玩家自己维护的提示词，每轮请求拿到的也是当前时间而非加载时的旧值。
-  - 判断模型（judge）同样带上，无副作用。
-
 ### Changed
 
+- `system.json` 升到 2.2.0：新增 `multi_model_enabled` / `models_dir` / `ai_dialogue_max_rounds` / `models` 四个字段；旧的 `dual_model_enabled` + `judge` / `reply` 标记为已弃用，设成 true 仍按老逻辑工作。
 - **README 改成面向使用者的手册**：删掉 48 项配置全表、协议互斥细节、双模型分步教程、排查手册与自测清单，只保留安装、能力、命令、最常调的设置和常见问题；版本变更只写在 CHANGELOG 与对应的 Release 说明里。
 
 ## 2.0.3 - 2026-11-05
