@@ -1,6 +1,6 @@
 package com.example.aichat.guard;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
 import com.example.aichat.usage.UsageStore;
@@ -69,7 +69,7 @@ public final class Guards {
         long now = System.currentTimeMillis();
         if (now - budgetWarnedAt >= BUDGET_WARN_INTERVAL_MS) {
             budgetWarnedAt = now;
-            AiChatMod.LOGGER.warn(
+            AiChat.LOGGER.warn(
                     "今日 token 已用 {} / 预算 {}，暂停 AI 请求"
                             + "（跨天自动恢复；调高 daily_token_budget 或 /aichat token clear 可提前解除）",
                     used, config.daily_token_budget);

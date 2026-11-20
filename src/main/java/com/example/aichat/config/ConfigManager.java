@@ -1,16 +1,17 @@
 package com.example.aichat.config;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.knowledge.KnowledgeReader;
 import com.example.aichat.memory.MemoryStore;
 import com.example.aichat.servertools.ServerToolAccess;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
+import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
 import com.google.gson.JsonObject;
 import com.google.gson.JsonParseException;
 import com.google.gson.JsonParser;
-import net.fabricmc.loader.api.FabricLoader;
+import com.example.aichat.platform.Platforms;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -24,6 +25,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 /**
  * 配置读写入口。
@@ -41,6 +44,9 @@ public final class ConfigManager {
     private static final String DEFAULT_JUDGE_PROMPT_FILE = "judge_prompt.txt";
     private static final String DEFAULT_REPLY_PROMPT_FILE = "reply_prompt.txt";
     private static final String LEGACY_PERSONA_FIELD = "persona_prompt";
+    /** 2.2.0 及以前的屏蔽配置字段（2.3.0 起换成 blocked_*_patterns，读取时自动迁移）。 */
+    private static final String LEGACY_MESSAGE_PREFIX_FIELD = "ignored_chat_prefixes";
+    private static final String LEGACY_PLAYER_PREFIX_FIELD = "ignored_player_prefixes";
     /**
      * 判断模型的默认输出预算。推理模型的思考 token 也算在 max_tokens 里，
      * 256 在 glm-4.7-flash 这类模型上会被 reasoning 吃光、content 变成空串。
@@ -57,9 +63,21 @@ public final class ConfigManager {
     /** system.json 与 config.json 用同一个版本号，方便对照。 */
     public static final String CURRENT_SYSTEM_VERSION = CURRENT_CONFIG_VERSION;
     /** 取不到模组元数据时（极少数加载顺序问题）退回这个版本号。 */
-    private static final String FALLBACK_VERSION = "2.0.3";
+    private static final String FALLBACK_VERSION = "2.3.0";
+
+    /** 命中屏蔽规则时统一给玩家看的说明，各处（日志 / 状态 / 配置注释）都用这一句。 */
+    public static final String BLOCK_NOTICE = "命中屏蔽规则，消息将不会发送给AI。";
+    /** 消息屏蔽规则的默认值：``!!`` 开头的指令调用（允许前导空格）。 */
+    public static final List<String> DEFAULT_MESSAGE_PATTERNS = List.of("^\\s*!!");
+    /** 玩家屏蔽规则的默认值：``bot_`` 开头的假人。 */
+    public static final List<String> DEFAULT_PLAYER_PATTERNS = List.of("^bot_");
+    /** 屏蔽规则统一按「不区分大小写」编译，规则里写 {@code (?-i)} 可单独关掉。 */
+    private static final int RULE_FLAGS = Pattern.CASE_INSENSITIVE | Pattern.UNICODE_CASE;
 
     private static volatile ModConfig config;
+    /** 编译好的屏蔽规则；reload 时整体替换，聊天热路径上不再重复编译正则。 */
+    private static volatile List<Pattern> messagePatterns = List.of();
+    private static volatile List<Pattern> playerPatterns = List.of();
     private static volatile SystemConfig systemConfig;
     private static Path modConfigDir;
 
@@ -67,7 +85,7 @@ public final class ConfigManager {
     }
 
     public static void init() {
-        modConfigDir = FabricLoader.getInstance().getConfigDir().resolve("aichat");
+        modConfigDir = Platforms.get().configDir().resolve("aichat");
         reload();
     }
 
@@ -107,6 +125,8 @@ public final class ConfigManager {
             // 全部校验通过后再替换，避免加载失败时丢失旧配置
             config = loaded;
             systemConfig = loadedSystem;
+            messagePatterns = compileRules(loaded.blocked_message_patterns, "消息");
+            playerPatterns = compileRules(loaded.blocked_player_patterns, "玩家");
 
             if (DEFAULT_SYSTEM_PROMPT_FILE.equals(loaded.system_prompt_file)) {
                 copyIfMissing(DEFAULT_SYSTEM_PROMPT_FILE);
@@ -151,8 +171,7 @@ public final class ConfigManager {
         if (target.buffer_max_chars < 1) {
             target.buffer_max_chars = 500;
         }
-        applyIgnoredPrefixDefaults(target);
-        applyIgnoredPlayerDefaults(target);
+        applyBlockRuleDefaults(target);
         applyGuardDefaults(target);
         if (target.memory_dir == null || target.memory_dir.isBlank()) {
             target.memory_dir = "memory";
@@ -164,39 +183,27 @@ public final class ConfigManager {
     }
 
     /**
-     * 忽略前缀的兜底与清洗：null 补默认 {@code ["!!"]}，去掉空白项并 trim。
-     * 注意「空数组」是合法配置（明确表示不忽略任何前缀），这里不会把空数组换成默认值。
+     * 屏蔽规则的兜底与清洗：null 补默认值，去掉空白项并 trim。
+     * 「空数组」是合法配置（明确表示不屏蔽），这里不会把空数组换成默认值。
      */
-    private static void applyIgnoredPrefixDefaults(ModConfig target) {
-        if (target.ignored_chat_prefixes == null) {
-            target.ignored_chat_prefixes = new ArrayList<>(List.of("!!"));
-            return;
-        }
-        List<String> cleaned = new ArrayList<>(target.ignored_chat_prefixes.size());
-        for (String prefix : target.ignored_chat_prefixes) {
-            if (prefix != null && !prefix.isBlank()) {
-                cleaned.add(prefix.trim());
-            }
-        }
-        target.ignored_chat_prefixes = cleaned;
+    private static void applyBlockRuleDefaults(ModConfig target) {
+        target.blocked_message_patterns = cleanRules(
+                target.blocked_message_patterns, DEFAULT_MESSAGE_PATTERNS);
+        target.blocked_player_patterns = cleanRules(
+                target.blocked_player_patterns, DEFAULT_PLAYER_PATTERNS);
     }
 
-    /**
-     * 忽略玩家前缀的兜底与清洗：null 补默认 {@code ["bot_"]}，去掉空白项并 trim。
-     * 空数组同样是合法配置（表示不忽略任何玩家），不会被换回默认值。
-     */
-    private static void applyIgnoredPlayerDefaults(ModConfig target) {
-        if (target.ignored_player_prefixes == null) {
-            target.ignored_player_prefixes = new ArrayList<>(List.of("bot_"));
-            return;
+    private static List<String> cleanRules(List<String> rules, List<String> defaults) {
+        if (rules == null) {
+            return new ArrayList<>(defaults);
         }
-        List<String> cleaned = new ArrayList<>(target.ignored_player_prefixes.size());
-        for (String prefix : target.ignored_player_prefixes) {
-            if (prefix != null && !prefix.isBlank()) {
-                cleaned.add(prefix.trim());
+        List<String> cleaned = new ArrayList<>(rules.size());
+        for (String rule : rules) {
+            if (rule != null && !rule.isBlank()) {
+                cleaned.add(rule.trim());
             }
         }
-        target.ignored_player_prefixes = cleaned;
+        return cleaned;
     }
 
     /**
@@ -226,22 +233,34 @@ public final class ConfigManager {
     }
 
     /**
-     * 这条聊天内容是否属于「不送给 AI」的指令类消息。
+     * 这条聊天内容是否命中屏蔽规则。
      * <p>
-     * 判定在进入缓冲区之前完成：命中前缀的消息既不进缓冲、也不进历史上下文，连请求都不会发。
-     * 前导空格会被忽略（{@code "  !!ledger"} 同样算指令）。
+     * 判定在进入缓冲区之前完成：命中者既不进缓冲、也不进历史上下文，连请求都不会发。
+     * 规则是正则，匹配方式为任意位置匹配（{@code find}），不区分大小写。
      */
-    public static boolean isIgnoredChat(String content) {
+    public static boolean isBlockedMessage(String content) {
         if (content == null || content.isEmpty()) {
             return false;
         }
-        ModConfig current = config;
-        if (current == null || current.ignored_chat_prefixes == null) {
+        return matchesAny(messagePatterns, content);
+    }
+
+    /**
+     * 这个玩家是否命中屏蔽规则。
+     * <p>
+     * 命中者不属于「会被 AI 看到的人」：聊天与加入/退出事件一视同仁，既不进缓冲、
+     * 也不进历史上下文，连请求都不会发。规则是正则，不区分大小写。
+     */
+    public static boolean isBlockedPlayer(String playerName) {
+        if (playerName == null || playerName.isEmpty()) {
             return false;
         }
-        String trimmed = content.stripLeading();
-        for (String prefix : current.ignored_chat_prefixes) {
-            if (prefix != null && !prefix.isEmpty() && trimmed.startsWith(prefix)) {
+        return matchesAny(playerPatterns, playerName);
+    }
+
+    private static boolean matchesAny(List<Pattern> patterns, String text) {
+        for (Pattern pattern : patterns) {
+            if (pattern.matcher(text).find()) {
                 return true;
             }
         }
@@ -249,28 +268,26 @@ public final class ConfigManager {
     }
 
     /**
-     * 这个玩家是否属于「不送给 AI」的假人/机器人。
-     * <p>
-     * 判定发生在进缓冲区之前，聊天与加入/退出事件一视同仁：命中者既不进缓冲、
-     * 也不进历史上下文，连请求都不会发。比较时忽略大小写，{@code BOT_Farm} 同样算。
+     * 把屏蔽规则编译成 {@link Pattern}，编译失败的单条规则只告警并跳过，
+     * 不让一个写错的正则把整个聊天通道关掉。
      */
-    public static boolean isIgnoredPlayer(String playerName) {
-        if (playerName == null || playerName.isEmpty()) {
-            return false;
+    private static List<Pattern> compileRules(List<String> rules, String label) {
+        List<Pattern> compiled = new ArrayList<>();
+        if (rules == null) {
+            return compiled;
         }
-        ModConfig current = config;
-        if (current == null || current.ignored_player_prefixes == null) {
-            return false;
-        }
-        for (String prefix : current.ignored_player_prefixes) {
-            if (prefix == null || prefix.isEmpty()) {
+        for (String rule : rules) {
+            if (rule == null || rule.isBlank()) {
                 continue;
             }
-            if (playerName.regionMatches(true, 0, prefix, 0, prefix.length())) {
-                return true;
+            try {
+                compiled.add(Pattern.compile(rule, RULE_FLAGS));
+            } catch (PatternSyntaxException e) {
+                AiChat.LOGGER.warn("屏蔽规则（{}）\"{}\" 不是合法正则，已跳过：{}",
+                        label, rule, e.getDescription());
             }
         }
-        return false;
+        return List.copyOf(compiled);
     }
 
     private static void applyServerToolDefaults(ModConfig target) {
@@ -335,13 +352,20 @@ public final class ConfigManager {
             throws IOException {
         if (!Files.exists(file)) {
             writeRendered(file, entries, ConfigDoc.defaults(entries), system);
-            AiChatMod.LOGGER.info("已生成默认配置：{}（版本 {}）", displayName, currentVersion);
+            AiChat.LOGGER.info("已生成默认配置：{}（版本 {}）", displayName, currentVersion);
             return ConfigDoc.defaults(entries);
         }
 
         JsonObject user = readLenient(file, displayName);
+        // 旧字段迁移必须在合并默认值之前做：合并会先把新字段填上默认值，
+        // 之后再迁移就分不清「用户没配」和「用户配了旧字段」了。
+        boolean migrated = !system && migrateLegacyBlockRules(user);
         String version = readVersion(user, versionField);
         if (!isOlderThan(version, currentVersion)) {
+            if (migrated) {
+                // 版本没变但字段挪了位置：只重写一次，不备份（值没丢，只是换了键名）
+                writeRendered(file, entries, user, system);
+            }
             return user;
         }
 
@@ -349,7 +373,7 @@ public final class ConfigManager {
         merged.addProperty(versionField, currentVersion);
         backup(file, version);
         writeRendered(file, entries, merged, system);
-        AiChatMod.LOGGER.info("已升级 {}（{} -> {}），原文件已备份，新字段与注释已补齐",
+        AiChat.LOGGER.info("已升级 {}（{} -> {}），原文件已备份，新字段与注释已补齐",
                 displayName, version.isBlank() ? "未知" : version, currentVersion);
         return merged;
     }
@@ -357,11 +381,7 @@ public final class ConfigManager {
     /** 取模组版本号作为配置版本；去掉开发号后缀（{@code 2.0.3-dev.1} -> {@code 2.0.3}）。 */
     private static String resolveModVersion() {
         try {
-            return FabricLoader.getInstance()
-                    .getModContainer("aichat")
-                    .map(container -> container.getMetadata().getVersion().getFriendlyString())
-                    .map(ConfigManager::baseVersion)
-                    .orElse(FALLBACK_VERSION);
+            return ConfigManager.baseVersion(Platforms.get().modVersion());
         } catch (RuntimeException | LinkageError e) {
             return FALLBACK_VERSION;
         }
@@ -864,5 +884,62 @@ public final class ConfigManager {
         }
         root.remove(LEGACY_PERSONA_FIELD);
         return true;
+    }
+
+    /**
+     * 2.2.0 及以前的屏蔽配置是「前缀数组」：{@code ignored_chat_prefixes}（消息）与
+     * {@code ignored_player_prefixes}（玩家）。2.3.0 起统一成正则表达式，这里把旧值换算成
+     * 等价的正则（前缀 → {@code ^\s*} + 字面量），再从配置里删掉旧字段。
+     * <p>
+     * 换算后语义不变；空数组仍是「不屏蔽」，不会被补成默认规则。
+     */
+    private static boolean migrateLegacyBlockRules(JsonObject root) {
+        boolean changed = false;
+        if (root.has(LEGACY_MESSAGE_PREFIX_FIELD)) {
+            if (!root.has("blocked_message_patterns")) {
+                root.add("blocked_message_patterns",
+                        legacyPrefixesToPatterns(root.get(LEGACY_MESSAGE_PREFIX_FIELD), "^\\s*"));
+            }
+            root.remove(LEGACY_MESSAGE_PREFIX_FIELD);
+            changed = true;
+        }
+        if (root.has(LEGACY_PLAYER_PREFIX_FIELD)) {
+            if (!root.has("blocked_player_patterns")) {
+                root.add("blocked_player_patterns",
+                        legacyPrefixesToPatterns(root.get(LEGACY_PLAYER_PREFIX_FIELD), "^"));
+            }
+            root.remove(LEGACY_PLAYER_PREFIX_FIELD);
+            changed = true;
+        }
+        return changed;
+    }
+
+    private static JsonElement legacyPrefixesToPatterns(JsonElement legacy, String anchor) {
+        JsonArray patterns = new JsonArray();
+        if (legacy != null && legacy.isJsonArray()) {
+            for (JsonElement element : legacy.getAsJsonArray()) {
+                if (element == null || !element.isJsonPrimitive()) {
+                    continue;
+                }
+                String prefix = element.getAsString();
+                if (prefix != null && !prefix.isBlank()) {
+                    patterns.add(anchor + escapeRegex(prefix.trim()));
+                }
+            }
+        }
+        return patterns;
+    }
+
+    /** 把一段字面量转成正则（只转义元字符，输出比 {@link Pattern#quote} 好读）。 */
+    private static String escapeRegex(String literal) {
+        StringBuilder escaped = new StringBuilder(literal.length() + 4);
+        for (int i = 0; i < literal.length(); i++) {
+            char c = literal.charAt(i);
+            if ("\\.[]{}()<>*+-=!?^$|".indexOf(c) >= 0) {
+                escaped.append('\\');
+            }
+            escaped.append(c);
+        }
+        return escaped.toString();
     }
 }

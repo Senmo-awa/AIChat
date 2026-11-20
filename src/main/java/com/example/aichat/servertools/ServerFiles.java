@@ -1,9 +1,8 @@
 package com.example.aichat.servertools;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
-import net.fabricmc.loader.api.FabricLoader;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -65,7 +64,7 @@ public final class ServerFiles {
 
     /** 服务器根目录（模组运行目录）。 */
     public static Path root() {
-        return FabricLoader.getInstance().getGameDir().toAbsolutePath().normalize();
+        return com.example.aichat.platform.Platforms.get().gameDir();
     }
 
     // ---------------- 各个操作 ----------------
@@ -514,6 +513,6 @@ public final class ServerFiles {
         for (Path path : paths) {
             Files.deleteIfExists(path);
         }
-        AiChatMod.LOGGER.info("永久删除：{}", display(target));
+        AiChat.LOGGER.info("永久删除：{}", display(target));
     }
 }

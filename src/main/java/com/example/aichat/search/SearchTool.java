@@ -1,6 +1,6 @@
 package com.example.aichat.search;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
 import com.example.aichat.state.StateManager;
@@ -82,13 +82,13 @@ public final class SearchTool implements Tool {
                     config.search_timeout_seconds);
             run.countSearch();
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 联网搜索 provider={} query={} 用时={}ms",
+                AiChat.LOGGER.info("[debug] 联网搜索 provider={} query={} 用时={}ms",
                         config.search_provider, ConsoleSafe.escape(query),
                         System.currentTimeMillis() - start);
             }
             return result;
         } catch (Exception e) {
-            AiChatMod.LOGGER.warn("联网搜索失败（provider={}）：{}",
+            AiChat.LOGGER.warn("联网搜索失败（provider={}）：{}",
                     config.search_provider, ConsoleSafe.escape(e.getMessage()));
             return "搜索失败: " + e.getMessage() + "。请如实告诉玩家这次没搜到，不要编造结果。";
         }

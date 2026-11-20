@@ -1,6 +1,6 @@
 package com.example.aichat.model;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigDoc;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
@@ -53,7 +53,7 @@ public final class ModelRegistry {
             }
             String id = entry.id.trim();
             if (!seen.add(id.toLowerCase(Locale.ROOT))) {
-                AiChatMod.LOGGER.warn("多模型：模型 id 重复（{}），只保留第一个", id);
+                AiChat.LOGGER.warn("多模型：模型 id 重复（{}），只保留第一个", id);
                 continue;
             }
             String dirName = entry.dir == null || entry.dir.isBlank() ? id : entry.dir.trim();
@@ -63,16 +63,16 @@ public final class ModelRegistry {
                 ModelFile file = loadOrCreate(dir);
                 specs.add(build(id, entry, dir, file));
             } catch (IOException | RuntimeException e) {
-                AiChatMod.LOGGER.warn("多模型：模型 {} 加载失败（{}），已跳过", id, String.valueOf(e.getMessage()));
+                AiChat.LOGGER.warn("多模型：模型 {} 加载失败（{}），已跳过", id, String.valueOf(e.getMessage()));
             }
         }
         synchronized (LOCK) {
             MODELS = List.copyOf(specs);
         }
         if (specs.isEmpty()) {
-            AiChatMod.LOGGER.warn("多模型：multi_model_enabled=true 但一个可用模型都没有，回落到单模型模式");
+            AiChat.LOGGER.warn("多模型：multi_model_enabled=true 但一个可用模型都没有，回落到单模型模式");
         } else {
-            AiChatMod.LOGGER.info("多模型：已加载 {} 个模型（{}）", specs.size(), summarize(specs));
+            AiChat.LOGGER.info("多模型：已加载 {} 个模型（{}）", specs.size(), summarize(specs));
         }
     }
 
@@ -93,7 +93,7 @@ public final class ModelRegistry {
         Path file = dir.resolve("model.json");
         if (!Files.exists(file)) {
             Files.writeString(file, ConfigDoc.renderModel(new JsonObject()), StandardCharsets.UTF_8);
-            AiChatMod.LOGGER.info("多模型：已生成默认配置 {}", file);
+            AiChat.LOGGER.info("多模型：已生成默认配置 {}", file);
             return new ModelFile();
         }
         String text = Files.readString(file, StandardCharsets.UTF_8);

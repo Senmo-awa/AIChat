@@ -1,6 +1,6 @@
 package com.example.aichat.ai;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.guard.Guards;
 import com.example.aichat.state.StateManager;
@@ -77,19 +77,23 @@ public final class AiDispatcher {
         if (SHUTTING_DOWN.get()) {
             return;
         }
-        // 被忽略的玩家（默认 bot_ 开头的假人）：聊天与加入/退出事件一起拦。
+        // 命中玩家屏蔽规则：聊天与加入/退出事件一起拦。
         // 放在这里而不是只放在 ChatListener，是为了即便将来多出新的入口也不会漏过滤。
-        if (ConfigManager.isIgnoredPlayer(ctx.playerName())) {
+        if (ConfigManager.isBlockedPlayer(ctx.playerName())) {
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 忽略玩家 {} 的事件（{}），未提交给 AI",
-                        ctx.playerName(), ctx.eventType());
+                AiChat.LOGGER.info("[debug] {}（事件 {}，玩家 {}）",
+                        ConfigManager.BLOCK_NOTICE, ctx.eventType(), ctx.playerName());
             }
             return;
         }
-        // 指令类消息（默认 !! 开头，MCDR / 指令插件的调用前缀）不送 AI：
+        // 命中消息屏蔽规则（默认 !! 开头的指令调用）同样不送 AI：
         // 即便将来多出新的入口调到这里也不会漏过滤。特权请求不参与这个判定——
         // 它的 !+ 前缀已经被剥掉，内容是管理员明确要让 AI 处理的。
-        if (!ctx.serverTools() && ConfigManager.isIgnoredChat(ctx.content())) {
+        if (!ctx.serverTools() && ConfigManager.isBlockedMessage(ctx.content())) {
+            if (StateManager.isDebug()) {
+                AiChat.LOGGER.info("[debug] {}（消息规则）：{}",
+                        ConfigManager.BLOCK_NOTICE, ctx.content());
+            }
             return;
         }
         // 下面三道节流都只在「聊天」上生效（join/quit 是事件，不该被点名/冷却挡住），
@@ -97,13 +101,13 @@ public final class AiDispatcher {
         if (!ctx.serverTools() && "chat".equals(ctx.eventType())) {
             if (!Guards.mentioned(ctx.content())) {
                 if (StateManager.isDebug()) {
-                    AiChatMod.LOGGER.info("[debug] 没被点名（被动回复），忽略：{}", ctx.content());
+                    AiChat.LOGGER.info("[debug] 没被点名（被动回复），忽略：{}", ctx.content());
                 }
                 return;
             }
             if (Guards.onCooldown(ctx.playerName())) {
                 if (StateManager.isDebug()) {
-                    AiChatMod.LOGGER.info("[debug] 玩家冷却中，忽略：{}（间隔 {} 秒）",
+                    AiChat.LOGGER.info("[debug] 玩家冷却中，忽略：{}（间隔 {} 秒）",
                             ctx.playerName(), ConfigManager.get().player_cooldown_seconds);
                 }
                 return;
@@ -120,14 +124,14 @@ public final class AiDispatcher {
         // 特权请求（管理员用前缀发起的服务器管理请求）不进缓冲区：
         // 缓冲会把同一时间别人的话一起拼进来，那份授权就说不清是谁给的了。
         if (ctx.serverTools()) {
-            AiChatMod.LOGGER.info("服务器管理工具请求：{}（特权请求跳过缓冲，立即发送）", ctx.playerName());
+            AiChat.LOGGER.info("服务器管理工具请求：{}（特权请求跳过缓冲，立即发送）", ctx.playerName());
             process(List.of(ctx));
             return;
         }
 
         if (!ConfigManager.get().buffer_enabled) {
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 消息缓冲已关闭（buffer_enabled=false），立即发送");
+                AiChat.LOGGER.info("[debug] 消息缓冲已关闭（buffer_enabled=false），立即发送");
             }
             process(List.of(ctx));
             return;
@@ -150,14 +154,14 @@ public final class AiDispatcher {
             }
         }
         if (batch != null) {
-            AiChatMod.LOGGER.info("缓冲达到上限（{} 条 / {} 字符），立即发送 {} 条消息",
+            AiChat.LOGGER.info("缓冲达到上限（{} 条 / {} 字符），立即发送 {} 条消息",
                     ConfigManager.get().buffer_max_messages, ConfigManager.get().buffer_max_chars,
                     batch.size());
             process(batch);
             return;
         }
         if (StateManager.isDebug()) {
-            AiChatMod.LOGGER.info("[debug] 消息进入缓冲：已攒 {} 条 / {} 字符，{} 秒后发送",
+            AiChat.LOGGER.info("[debug] 消息进入缓冲：已攒 {} 条 / {} 字符，{} 秒后发送",
                     pending, pendingChars, Math.max(1, ConfigManager.get().buffer_delay_seconds));
         }
     }
@@ -181,9 +185,10 @@ public final class AiDispatcher {
         if (!StateManager.isChatEnabled()) {
             return;
         }
-        if (ConfigManager.isIgnoredPlayer(ctx.playerName())) {
+        if (ConfigManager.isBlockedPlayer(ctx.playerName())) {
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 忽略玩家 {} 的私聊请求（前缀过滤）", ctx.playerName());
+                AiChat.LOGGER.info("[debug] {}（私聊，玩家 {}）",
+                        ConfigManager.BLOCK_NOTICE, ctx.playerName());
             }
             return;
         }
@@ -191,7 +196,7 @@ public final class AiDispatcher {
         if (!fromConsole) {
             if (Guards.onCooldown(ctx.playerName())) {
                 if (StateManager.isDebug()) {
-                    AiChatMod.LOGGER.info("[debug] 玩家冷却中，忽略私聊：{}", ctx.playerName());
+                    AiChat.LOGGER.info("[debug] 玩家冷却中，忽略私聊：{}", ctx.playerName());
                 }
                 return;
             }
@@ -204,7 +209,7 @@ public final class AiDispatcher {
         }
         if (!ConfigManager.hasUsableApiKey()) {
             if (KEY_WARNED.compareAndSet(false, true)) {
-                AiChatMod.LOGGER.warn(
+                AiChat.LOGGER.warn(
                         "未配置可用的 API Key，AI 回复已暂停（请编辑 config/aichat/config.json 或 system.json）");
             }
             return;
@@ -230,7 +235,7 @@ public final class AiDispatcher {
                     result = AiClient.ask(ctx, history).join();
                     usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
                     if (usage.total() > 0 && !SHUTTING_DOWN.get()) {
-                        AiChatMod.LOGGER.info(
+                        AiChat.LOGGER.info(
                                 "AI token 用量（私聊）：prompt={} completion={} total={}（玩家：{}）",
                                 usage.prompt(), usage.completion(), usage.total(), ctx.playerName());
                         UsageStore.record(ctx.playerName(), ConfigManager.usageModelName(), usage,
@@ -249,7 +254,7 @@ public final class AiDispatcher {
                                 : result.content());
 
                 if (StateManager.isDebug()) {
-                    AiChatMod.LOGGER.info(
+                    AiChat.LOGGER.info(
                             "[debug] 私聊解析结果：reply={}，content={}（玩家：{}，历史条数：{}）",
                             result.reply(), ConsoleSafe.escape(replyContent),
                             ctx.playerName(), history.size());
@@ -278,9 +283,9 @@ public final class AiDispatcher {
                 TokenUsage finalUsage = usage;
                 server.execute(() -> deliverPrivate(server, ctx.playerName(), line, finalUsage));
             } catch (java.util.concurrent.CancellationException e) {
-                AiChatMod.LOGGER.info("服务器正在关闭，进行中的私聊推理已中止（玩家：{}）", ctx.playerName());
+                AiChat.LOGGER.info("服务器正在关闭，进行中的私聊推理已中止（玩家：{}）", ctx.playerName());
             } catch (Exception e) {
-                AiChatMod.LOGGER.warn("AI 私聊请求失败: {}", ConsoleSafe.escape(e.getMessage()));
+                AiChat.LOGGER.warn("AI 私聊请求失败: {}", ConsoleSafe.escape(e.getMessage()));
             }
         });
     }
@@ -373,7 +378,7 @@ public final class AiDispatcher {
         }
         // 合并了多条才值得记一行（单条的请求本来就有 token 用量那行）；这样「到底有没有合并」一眼可见
         if (batch.size() > 1) {
-            AiChatMod.LOGGER.info("缓冲到期：合并 {} 条消息后发送（等待 {} 秒）",
+            AiChat.LOGGER.info("缓冲到期：合并 {} 条消息后发送（等待 {} 秒）",
                     batch.size(), Math.max(1, ConfigManager.get().buffer_delay_seconds));
         }
         process(batch);
@@ -400,7 +405,7 @@ public final class AiDispatcher {
 
         if (!ConfigManager.hasUsableApiKey()) {
             if (KEY_WARNED.compareAndSet(false, true)) {
-                AiChatMod.LOGGER.warn(
+                AiChat.LOGGER.warn(
                         "未配置可用的 API Key，AI 回复已暂停（请编辑 config/aichat/config.json 或 system.json）");
             }
             return;
@@ -426,7 +431,7 @@ public final class AiDispatcher {
                 }
 
                 if (usage.total() > 0) {
-                    AiChatMod.LOGGER.info(
+                    AiChat.LOGGER.info(
                             "AI token 用量：prompt={} completion={} total={}（玩家：{}，事件：{}，消息数：{}）",
                             usage.prompt(), usage.completion(), usage.total(),
                             batch.playerName(), batch.eventType(), events.size()
@@ -443,7 +448,7 @@ public final class AiDispatcher {
                                 : result.content());
 
                 if (StateManager.isDebug()) {
-                    AiChatMod.LOGGER.info(
+                    AiChat.LOGGER.info(
                             "[debug] 解析结果：reply={}，content={}（事件：{}，消息数：{}，历史条数：{}）",
                             result.reply(), ConsoleSafe.escape(replyContent),
                             batch.eventType(), events.size(), history.size());
@@ -474,9 +479,9 @@ public final class AiDispatcher {
                 server.execute(() -> broadcast(server, line, finalUsage));
             } catch (java.util.concurrent.CancellationException e) {
                 // 停服时被主动掐掉的推理，属于预期行为，不算失败
-                AiChatMod.LOGGER.info("服务器正在关闭，进行中的 AI 推理已中止（玩家：{}）", batch.playerName());
+                AiChat.LOGGER.info("服务器正在关闭，进行中的 AI 推理已中止（玩家：{}）", batch.playerName());
             } catch (Exception e) {
-                AiChatMod.LOGGER.warn("AI 请求失败: {}", ConsoleSafe.escape(e.getMessage()));
+                AiChat.LOGGER.warn("AI 请求失败: {}", ConsoleSafe.escape(e.getMessage()));
             }
         });
     }
@@ -489,7 +494,7 @@ public final class AiDispatcher {
         List<MultiModelChat.ModelReply> replies = MultiModelChat.run(batch, history);
         if (SHUTTING_DOWN.get() || replies.isEmpty()) {
             if (StateManager.isDebug() && replies.isEmpty()) {
-                AiChatMod.LOGGER.info("[debug] 多模型：本次没有产生回复（玩家：{}）", batch.playerName());
+                AiChat.LOGGER.info("[debug] 多模型：本次没有产生回复（玩家：{}）", batch.playerName());
             }
             return;
         }
@@ -626,7 +631,7 @@ public final class AiDispatcher {
         }
         currentServer = null;
         int cancelled = InFlight.cancelAll();
-        AiChatMod.LOGGER.info(
+        AiChat.LOGGER.info(
                 "服务器正在关闭：已停止 AI 请求，清空缓冲区（丢弃 {} 条待处理事件），中止 {} 个在途请求",
                 dropped, cancelled);
     }

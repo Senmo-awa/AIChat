@@ -1,6 +1,6 @@
 package com.example.aichat.ai;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.model.ModelRegistry;
 import com.example.aichat.model.ModelSpec;
@@ -55,7 +55,7 @@ public final class MultiModelChat {
         List<ModelSpec> targets = pickTargets(ctx, judges, chats, admins, history);
         if (targets.isEmpty()) {
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 多模型：本次事件没有命中任何回复模型（玩家：{}）", ctx.playerName());
+                AiChat.LOGGER.info("[debug] 多模型：本次事件没有命中任何回复模型（玩家：{}）", ctx.playerName());
             }
             return List.of();
         }
@@ -104,7 +104,7 @@ public final class MultiModelChat {
             pending = next;
             replies.addAll(next);
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 多模型：AI 互相对话第 {} 轮，产生 {} 条回复（累计 {}）",
+                AiChat.LOGGER.info("[debug] 多模型：AI 互相对话第 {} 轮，产生 {} 条回复（累计 {}）",
                         round, next.size(), produced);
             }
         }
@@ -157,13 +157,13 @@ public final class MultiModelChat {
                 verdict = call(judge, ctx, ctx.userMessageForAi(), history, false,
                         UsageStore.CHANNEL_PUBLIC);
             } catch (Exception e) {
-                AiChatMod.LOGGER.warn("多模型：判断模型 {} 失败（{}）", judge.id(),
+                AiChat.LOGGER.warn("多模型：判断模型 {} 失败（{}）", judge.id(),
                         ConsoleSafe.escape(e.getMessage()));
                 continue;
             }
             if (verdict == null || !verdict.reply()) {
                 if (StateManager.isDebug()) {
-                    AiChatMod.LOGGER.info("[debug] 多模型：判断模型 {} 认为不用接话", judge.id());
+                    AiChat.LOGGER.info("[debug] 多模型：判断模型 {} 认为不用接话", judge.id());
                 }
                 continue;
             }
@@ -190,7 +190,7 @@ public final class MultiModelChat {
             }
         }
         if (picked.isEmpty()) {
-            AiChatMod.LOGGER.warn("多模型：判断模型 {} 的 routes_to 里没有有效的 chat 模型，改为全部 chat 模型",
+            AiChat.LOGGER.warn("多模型：判断模型 {} 的 routes_to 里没有有效的 chat 模型，改为全部 chat 模型",
                     judge.id());
             return chats;
         }
@@ -209,7 +209,7 @@ public final class MultiModelChat {
                     : result.content();
             return new ModelReply(spec.id(), spec.displayName(), spec.replyPrefix(), content);
         } catch (Exception e) {
-            AiChatMod.LOGGER.warn("多模型：模型 {} 请求失败（{}）", spec.id(),
+            AiChat.LOGGER.warn("多模型：模型 {} 请求失败（{}）", spec.id(),
                     ConsoleSafe.escape(e.getMessage()));
             return null;
         }
@@ -223,7 +223,7 @@ public final class MultiModelChat {
         TokenUsage usage = result.usage() == null ? TokenUsage.ZERO : result.usage();
         if (usage.total() > 0) {
             UsageStore.record(ctx.playerName(), spec.id(), usage, channel);
-            AiChatMod.LOGGER.info("AI token 用量（{}）：prompt={} completion={} total={}（玩家：{}）",
+            AiChat.LOGGER.info("AI token 用量（{}）：prompt={} completion={} total={}（玩家：{}）",
                     spec.id(), usage.prompt(), usage.completion(), usage.total(), ctx.playerName());
         }
         return result;

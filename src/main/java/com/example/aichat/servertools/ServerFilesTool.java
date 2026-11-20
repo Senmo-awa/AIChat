@@ -1,6 +1,6 @@
 package com.example.aichat.servertools;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
 import com.example.aichat.text.ConsoleSafe;
@@ -64,7 +64,7 @@ public final class ServerFilesTool implements Tool {
         }
         String op = text(arguments, "op").toLowerCase(Locale.ROOT);
         String path = text(arguments, "path");
-        AiChatMod.LOGGER.info("[server-tools] 管理员 {} 调用 op={} path={}",
+        AiChat.LOGGER.info("[server-tools] 管理员 {} 调用 op={} path={}",
                 run.actorName().isBlank() ? "?" : run.actorName(),
                 op.isEmpty() ? "?" : op,
                 ConsoleSafe.escape(path.isEmpty() ? "." : path));

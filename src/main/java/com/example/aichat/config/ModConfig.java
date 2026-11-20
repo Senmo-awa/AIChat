@@ -22,13 +22,13 @@ import java.util.List;
  * reasoning_effort: low/medium/high 等；留空则不发送
  * max_output_tokens: 最大输出 token；0 表示不发送（Anthropic 用默认值）
  * thinking_budget_tokens: Anthropic 思考预算
- * config_version: 配置文件版本（模组版本号，如 "2.0.3"），用于升级时自动补齐新字段
+ * config_version: 配置文件版本（模组版本号，如 "2.3.0"），用于升级时自动补齐新字段
  * buffer_enabled: 是否启用消息缓冲（防抖合并，省 token）
  * buffer_delay_seconds: 最后一条消息后等待多少秒再发送
  * buffer_max_messages: 缓冲区最多条数，满了立即发送
  * buffer_max_chars: 缓冲区最多字符数，满了立即发送
- * ignored_chat_prefixes: 以这些前缀开头的聊天消息不送给 AI（默认 ["!!"]，MCDR 指令）
- * ignored_player_prefixes: 名字以这些前缀开头的玩家，其聊天与加入/退出事件不送给 AI（默认 ["bot_"]，假人）
+ * blocked_message_patterns: 聊天内容命中的屏蔽正则（默认 ["^\\s*!!"]，指令调用）
+ * blocked_player_patterns: 玩家名命中的屏蔽正则（默认 ["^bot_"]，假人）
  * system_prompt_in_user: 把系统提示词一并放进最后一条用户消息，默认 true
  * memory_enabled: 是否开启记忆功能（AI 可读写记忆文件），默认 true
  * memory_dir: 记忆文件夹名（相对于 config/aichat/）
@@ -36,7 +36,7 @@ import java.util.List;
  * server_tools_*: 服务器根目录文件管理工具（默认关闭，只有带前缀的特权消息才能调用）
  */
 public class ModConfig {
-    /** 配置文件版本，写的是模组版本号（如 {@code "2.0.3"}）。由 ConfigDoc 渲染写入，这里只为反序列化对齐。 */
+    /** 配置文件版本，写的是模组版本号（如 {@code "2.3.0"}）。由 ConfigDoc 渲染写入，这里只为反序列化对齐。 */
     public String config_version = "";
     public String api_url = "https://api.deepseek.com/chat/completions";
     public String api_key = "";
@@ -94,22 +94,25 @@ public class ModConfig {
     public int buffer_max_messages = 10;
     public int buffer_max_chars = 500;
     /**
-     * 忽略前缀：以这些字符串开头的聊天消息不送给 AI，也不进缓冲区和历史上下文。
-     * 默认 {@code ["!!"]}——{@code !!} 是 MCDR / 指令插件的调用前缀，属于指令而不是聊天，
-     * 当成聊天丢给模型只会白烧 token（还常常把模型带回「用户在让我执行指令」的误解）。
-     * 想连 {@code !} 这类前缀一起忽略就自己加进数组；空数组表示不忽略任何前缀。
+     * 屏蔽规则（消息）：按正则匹配聊天内容，命中任一条就不送给 AI。
+     * <p>
+     * 命中者不进缓冲区、不进历史上下文，也不计 token——等于这条消息从未出现过。
+     * 默认 {@code ["^\\s*!!"]}：{@code !!} 是指令插件（如 MCDR）的调用前缀，属于指令而不是聊天。
+     * 匹配方式是「任意位置匹配」（{@code find}），不区分大小写（可用 {@code (?-i)} 关闭），
+     * 需要从头匹配时自己在正则里写 {@code ^}；空数组表示不屏蔽任何消息。
      */
-    public List<String> ignored_chat_prefixes = new ArrayList<>(List.of("!!"));
+    public List<String> blocked_message_patterns = new ArrayList<>(List.of("^\\s*!!"));
     /**
-     * 忽略玩家：名字以这些字符串开头的玩家，其聊天与加入/退出事件一律不送给 AI。
+     * 屏蔽规则（玩家）：按正则匹配发送者名字，命中后其聊天与加入/退出事件一律不送给 AI。
      * <p>
-     * 默认 {@code ["bot_"]}——carpet / 假人（fake player）通常以 {@code bot_} 开头，
+     * 默认 {@code ["^bot_"]}——carpet / 假人（fake player）通常以 {@code bot_} 开头，
      * 它们进出服和自言自语（自动卖货、挂机测试）会白白吃掉 token，还会污染聊天历史。
-     * 判定是大小写不敏感的 {@code startsWith}，不是正则；空数组表示不忽略任何玩家。
+     * 匹配方式与 {@link #blocked_message_patterns} 相同（任意位置匹配、不区分大小写）；
+     * 空数组表示不屏蔽任何玩家。
      * <p>
-     * 与 {@link #ignored_chat_prefixes} 的区别：那个看「消息内容」，这个看「发送者名字」。
+     * 与 {@link #blocked_message_patterns} 的区别：那个看「说了什么」，这个看「谁说的」。
      */
-    public List<String> ignored_player_prefixes = new ArrayList<>(List.of("bot_"));
+    public List<String> blocked_player_patterns = new ArrayList<>(List.of("^bot_"));
     /**
      * 是否把系统提示词（含 JSON 格式契约、知识库文件列表、人设）再拼进最后一条用户消息。
      * 部分中转站/兼容端点会把 system 角色整条丢弃，导致模组的提示词从未到达模型，

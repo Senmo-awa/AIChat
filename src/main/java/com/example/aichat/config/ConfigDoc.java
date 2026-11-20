@@ -68,7 +68,7 @@ public final class ConfigDoc {
             // AI Chat 配置文件（config.json）
             // 以 // 开头的行都是注释，模组读取时会忽略，可以随手改、随手加。
             // 改完执行 /aichat reload 即可生效，不需要重启服务器。
-            // config_version 写的是模组版本号（如 "2.0.3"）：升级模组后若它低于当前模组版本，
+            // config_version 写的是模组版本号（如 "2.3.0"）：升级模组后若它低于当前模组版本，
             // 本文件会被重写一次补齐新字段（原文件备份为 config.json.v<旧版本>.bak），
             // 你自己的注释只在这次重写时会被替换成模组内置的说明。
             """;
@@ -85,7 +85,7 @@ public final class ConfigDoc {
     /** config.json 的字段顺序、默认值与注释。 */
     public static final List<Object> CONFIG_ENTRIES = List.<Object>of(
             Field.of("config_version",
-                    "配置文件版本，写的是模组版本号（如 \"2.0.3\"）。升级模组后这个值会跟模组版本比对，低于当前版本就补齐新字段并重写一次本文件。不要手动改大，否则升级时不会再补字段。",
+                    "配置文件版本，写的是模组版本号（如 \"2.3.0\"）。升级模组后这个值会跟模组版本比对，低于当前版本就补齐新字段并重写一次本文件。不要手动改大，否则升级时不会再补字段。",
                     ConfigManager.CURRENT_CONFIG_VERSION),
 
             Field.of("api_url",
@@ -189,12 +189,18 @@ public final class ConfigDoc {
             Field.of("buffer_max_chars",
                     "缓冲区最多攒多少字符，满了立即发送。",
                     500),
-            Field.of("ignored_chat_prefixes",
-                    "【忽略前缀】以这些字符串开头的聊天消息不送给 AI，也不进缓冲和历史上下文。默认 [\"!!\"]：!! 是 MCDR 等指令插件的调用前缀，属于指令而不是聊天，丢给模型只会白烧 token。空数组 = 不忽略任何前缀。",
-                    List.of("!!")),
-            Field.of("ignored_player_prefixes",
-                    "【忽略玩家】名字以这些字符串开头的玩家，其聊天消息与加入/退出事件一律不送给 AI。默认 [\"bot_\"]：carpet / 假人常以 bot_ 开头，它们进出服和自言自语会白烧 token、污染聊天历史。判定是忽略大小写的开头匹配，不是正则；空数组 = 不忽略任何玩家。注意它看的是「谁说的」，上面的 ignored_chat_prefixes 看的是「说了什么」。",
-                    List.of("bot_")),
+            Field.of("blocked_message_patterns",
+                    "【屏蔽规则 · 消息】对聊天内容做正则匹配，命中任一条就不送 AI：不进缓冲和历史，也不计 token。"
+                            + ConfigManager.BLOCK_NOTICE
+                            + "默认 ^\\s*!! 用于挡住 !! 开头的指令调用；空数组表示不屏蔽任何消息。"
+                            + "匹配方式为任意位置匹配，不区分大小写（写 (?-i) 可关闭），需要从头匹配时自己写 ^。",
+                    ConfigManager.DEFAULT_MESSAGE_PATTERNS),
+            Field.of("blocked_player_patterns",
+                    "【屏蔽规则 · 玩家】对发送者名字做正则匹配，命中后其聊天与加入/退出事件一律不送 AI。"
+                            + ConfigManager.BLOCK_NOTICE
+                            + "默认 ^bot_ 用于挡住 carpet 假人；空数组表示不屏蔽任何玩家。"
+                            + "与消息规则互相独立：这个看「谁说的」，上面那个看「说了什么」。",
+                    ConfigManager.DEFAULT_PLAYER_PATTERNS),
 
             Field.of("tool_result_budget_kb",
                     "单次对话所有工具结果回灌给模型的总预算（KB），0 = 不限。一次对话可能调用 4 轮工具，每轮都会把之前的结果重新发一遍；预算给小了省钱、给大了能读更多内容，默认 24。",
@@ -271,7 +277,7 @@ public final class ConfigDoc {
     /** system.json 的字段顺序、默认值与注释。 */
     public static final List<Object> SYSTEM_ENTRIES = List.<Object>of(
             Field.of("version",
-                    "配置文件版本，与 config.json 的 config_version 用同一个模组版本号（如 \"2.0.3\"）。",
+                    "配置文件版本，与 config.json 的 config_version 用同一个模组版本号（如 \"2.3.0\"）。",
                     ConfigManager.CURRENT_SYSTEM_VERSION),
             Field.of("multi_model_enabled",
                     "【多模型总开关】true 时按下面的 models 列表加载多个模型：judge 判断要不要接话，chat 负责回复（可以多个），admin 接管管理员特权请求。"

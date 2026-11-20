@@ -1,3 +1,27 @@
+## 2.3.0 - 2026-11-20
+
+### Added
+
+- **NeoForge 支持**：同一个模组现在同时提供 Fabric 与 NeoForge 两个包（`aichat-<版本>-fabric.jar` / `aichat-<版本>-neoforge.jar`），功能完全一致——聊天、私聊、多模型、工具、token 记账全部可用。NeoForge 包基于 NeoForge 26.3.0.103，不需要额外前置。
+  - 两个包共用同一套源码：与加载器无关的逻辑放在公共代码里，Fabric / NeoForge 各自只有很薄的入口与事件适配（`AiChatMod` / `AiChatNeoForge`、`ChatListener` / `ServerChatEvent`），判定逻辑只有一份，不会出现两个平台行为不一致。
+  - NeoForge 侧用可取消的 `ServerChatEvent` 实现「命中特权前缀但不广播」；`/aichat` 命令通过 `RegisterCommandsEvent` 注册，玩家进出走 `PlayerLoggedInEvent` / `PlayerLoggedOutEvent`。
+- **Minecraft 26.3 支持**：构建基线从 26.1.2 升到 26.3（Fabric Loader 0.20.1 / Fabric API 0.166.2+26.3）。26.4 目前只有快照，正式版发布后的下个版本跟进；旧版本（26.1.2 及以前）不需要重新构建适配，继续用 2.2.0 即可。
+
+### Changed
+
+- **屏蔽规则改用正则表达式**：`ignored_chat_prefixes` / `ignored_player_prefixes`（字符串前缀）→ `blocked_message_patterns` / `blocked_player_patterns`（正则数组）。
+  - 消息规则默认 `^\s*!!`，玩家规则默认 `^bot_`。匹配方式为任意位置匹配（`find`），不区分大小写（写 `(?-i)` 可单独关掉），需要从头匹配时自己在正则里写 `^`；空数组仍然表示「不屏蔽」。
+  - 升级时自动把旧前缀换算成等价正则（`!!` → `^\s*!!`、`bot_` → `^bot_`），旧字段随后从配置里移除，语义不变。正则写错只告警并跳过那一条，不会让聊天通道整个失效。
+  - 判定仍在进缓冲区之前完成：命中者不进缓冲、不进历史上下文、不计 token。
+- **统一屏蔽提示语**：凡是解释屏蔽行为的地方（启动日志、`/aichat status`、debug 日志、配置注释）统一成一句「命中屏蔽规则，消息将不会发送给AI。」，不再单独点名 `!!` / `bot_` 这类具体默认值，规则怎么配都读得通。
+- **配置注释与输出文本规范化**：注释里的版本号示例更新到本版本，去掉容易过时的具体插件名与历史期数描述；`/aichat status` 的屏蔽一行改成 `消息规则 / 玩家规则`（规则之间用 `|` 分隔，空规则显示「无」），不再直接打印数组的方括号。
+- **构建链**：Gradle 9.8.2、Loom 1.19.3；Fabric 包名带上 `-fabric` 后缀，和 `-neoforge` 包一一对应。
+
+### Notes
+
+- NeoForge 26.3 服务端本地实测：模组正常加载、配置文件生成、`/aichat status` 与 `/aichat reload` 正常，命令注册与玩家进出事件均已接上。
+- 从 2.2.0 升级会把 `config.json` 备份成 `config.json.v2.2.0.bak` 后重写一次，你填的值保留，旧的 `ignored_*` 字段会被换算并删除。
+
 ## 2.2.0 - 2026-11-15
 
 ### Added

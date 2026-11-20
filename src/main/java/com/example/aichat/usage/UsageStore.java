@@ -1,6 +1,6 @@
 package com.example.aichat.usage;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.google.gson.Gson;
 import com.google.gson.JsonElement;
@@ -93,7 +93,7 @@ public final class UsageStore {
                         StandardOpenOption.APPEND
                 );
             } catch (IOException e) {
-                AiChatMod.LOGGER.warn("写入 token 用量失败: {}", e.getMessage());
+                AiChat.LOGGER.warn("写入 token 用量失败: {}", e.getMessage());
             }
         }
     }
@@ -168,7 +168,7 @@ public final class UsageStore {
                 }
                 return true;
             } catch (IOException e) {
-                AiChatMod.LOGGER.warn("清空 token 用量失败: {}", e.getMessage());
+                AiChat.LOGGER.warn("清空 token 用量失败: {}", e.getMessage());
                 return false;
             }
         }
@@ -198,7 +198,7 @@ public final class UsageStore {
                         accumulate(line, from, buckets, channel);
                     }
                 } catch (IOException e) {
-                    AiChatMod.LOGGER.warn("读取 token 用量失败: {}", e.getMessage());
+                    AiChat.LOGGER.warn("读取 token 用量失败: {}", e.getMessage());
                 }
             }
         }
@@ -256,7 +256,7 @@ public final class UsageStore {
                         accumulateKey(line, from, buckets, channel, field);
                     }
                 } catch (IOException e) {
-                    AiChatMod.LOGGER.warn("读取 token 用量失败: {}", e.getMessage());
+                    AiChat.LOGGER.warn("读取 token 用量失败: {}", e.getMessage());
                 }
             }
         }

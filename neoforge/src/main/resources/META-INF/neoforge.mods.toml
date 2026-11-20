@@ -1,0 +1,28 @@
+modLoader = "javafml"
+loaderVersion = "[12,)"
+license = "MIT"
+issueTrackerURL = "https://github.com/Senmo-awa/AIChat/issues"
+
+[[mods]]
+modId = "aichat"
+version = "${version}"
+displayName = "AI Chat"
+authors = "Senmo"
+description = '''
+让 AI 在服务端聊天框中与玩家对话。支持 OpenAI 兼容与 Anthropic 接口，可接 DeepSeek / 千问 / Kimi / 智谱 / Ollama 等。
+'''
+displayURL = "https://github.com/Senmo-awa/AIChat"
+
+[[dependencies.aichat]]
+modId = "neoforge"
+type = "required"
+versionRange = "[${neoforge_version},)"
+ordering = "NONE"
+side = "SERVER"
+
+[[dependencies.aichat]]
+modId = "minecraft"
+type = "required"
+versionRange = "[26.3,26.4)"
+ordering = "NONE"
+side = "SERVER"

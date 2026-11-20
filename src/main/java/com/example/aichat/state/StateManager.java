@@ -1,6 +1,6 @@
 package com.example.aichat.state;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
@@ -46,7 +46,7 @@ public final class StateManager {
                     }
                 }
             } catch (IOException | JsonParseException e) {
-                AiChatMod.LOGGER.warn("读取 state.json 失败，使用默认状态: {}", e.getMessage());
+                AiChat.LOGGER.warn("读取 state.json 失败，使用默认状态: {}", e.getMessage());
             }
         }
         synchronized (LOCK) {
@@ -178,7 +178,7 @@ public final class StateManager {
             Files.createDirectories(file.getParent());
             Files.writeString(file, GSON.toJson(STATE), StandardCharsets.UTF_8);
         } catch (IOException e) {
-            AiChatMod.LOGGER.warn("写入 state.json 失败: {}", e.getMessage());
+            AiChat.LOGGER.warn("写入 state.json 失败: {}", e.getMessage());
         }
     }
 }

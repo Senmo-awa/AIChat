@@ -1,6 +1,6 @@
 package com.example.aichat.tool;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.knowledge.KnowledgeTool;
 import com.example.aichat.memory.MemoryReadTool;
 import com.example.aichat.memory.MemoryStore;
@@ -79,7 +79,7 @@ public final class Tools {
             }
             int remaining = run == null ? Integer.MAX_VALUE : run.remainingBudget();
             if (remaining <= 0) {
-                AiChatMod.LOGGER.info("工具 {} 未执行：本次对话工具结果预算（{} KB）已用尽",
+                AiChat.LOGGER.info("工具 {} 未执行：本次对话工具结果预算（{} KB）已用尽",
                         name, ToolRun.budgetKb());
                 return "本次对话的工具结果已达上限（" + ToolRun.budgetKb()
                         + " KB），不再执行新的工具调用。请基于已经拿到的信息直接回答；"
@@ -91,7 +91,7 @@ public final class Tools {
                 result = tool.invoke(args, run);
             } catch (Exception e) {
                 String message = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                AiChatMod.LOGGER.warn("工具 {} 调用失败：{}", name, ConsoleSafe.escape(message));
+                AiChat.LOGGER.warn("工具 {} 调用失败：{}", name, ConsoleSafe.escape(message));
                 result = "调用失败: " + message;
             }
             int limit = Math.min(tool.maxResultChars(), remaining);
@@ -100,12 +100,12 @@ public final class Tools {
                 run.consume(content.length());
             }
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 工具调用 name={} 结果长度={} 预算剩余={}",
+                AiChat.LOGGER.info("[debug] 工具调用 name={} 结果长度={} 预算剩余={}",
                         name, content.length(), Math.max(0, remaining - content.length()));
             }
             return content;
         }
-        AiChatMod.LOGGER.warn("模型调用了未注册的工具：{}", name);
+        AiChat.LOGGER.warn("模型调用了未注册的工具：{}", name);
         return "未知工具: " + name + "。只能调用工具列表中已有的工具。";
     }
 

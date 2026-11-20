@@ -4,15 +4,19 @@
 
 接得上 OpenAI 兼容和 Anthropic 两类接口——DeepSeek、千问、Kimi、智谱、豆包、Gemini、OpenRouter，或者本机跑的 Ollama 都能用。
 
-> 适配 Minecraft 26.1.2 · Fabric Loader 0.19.4+ · Fabric API · Java 25
+> 适配 Minecraft 26.3 · Fabric / NeoForge · Java 25
 
 ---
 
 ## 安装
 
-1. 把 `aichat-<版本>.jar` 和对应版本的 Fabric API 放进服务端 `mods/`。
-2. 启动一次服务器，`config/aichat/` 会自动生成配置与提示词。
-3. 打开 `config.json`，填上 `api_key`，按需改 `model`，执行 `/aichat reload`。
+两个加载器各有一个包，按服务器选一个：
+
+- **Fabric**：`aichat-<版本>-fabric.jar` + 对应版本的 Fabric API，一起放进服务端 `mods/`。
+- **NeoForge**：只要 `aichat-<版本>-neoforge.jar`，不需要额外前置。
+
+1. 启动一次服务器，`config/aichat/` 会自动生成配置与提示词。
+2. 打开 `config.json`，填上 `api_key`，按需改 `model`，执行 `/aichat reload`。
 
 进服打句话，它就会回你。
 
@@ -99,7 +103,8 @@
 | `max_context_messages` | 带多少条历史给模型 | 15 |
 | `reply_only_when_mentioned` | 只在被点名（默认「小墨」）时才回话 | 关 |
 | `daily_token_budget` | 每天 token 上限，超了自动停，跨天恢复 | 不限 |
-| `ignored_player_prefixes` | 名字这些开头的当成假人忽略 | `bot_` |
+| `blocked_message_patterns` | 消息正则，命中就不送给 AI（默认挡 `!!` 开头的指令） | `^\s*!!` |
+| `blocked_player_patterns` | 玩家名正则，命中就不送给 AI（默认挡假人） | `^bot_` |
 | `private_chat_mode` | 私聊范围：`off` 关闭 / `admin` 仅管理员 / `all` 所有人 | `admin` |
 | `server_tools_enabled` | 服务器管理工具总开关 | 关 |
 
@@ -114,6 +119,9 @@
 **换模型或换接口？**
 改 `api_url` 和 `model` 后 `reload`。`auto` 会根据地址自动识别协议，识别不准就手动填 `openai` 或 `anthropic`。
 
+**想彻底不让某类消息或某个玩家进 AI？**
+`blocked_message_patterns` 按正则匹配聊天内容，`blocked_player_patterns` 匹配玩家名——命中任意一条就不送 AI（不进上下文、不花 token）。默认挡 `!!` 开头的指令调用和 `bot_` 假人；匹配不区分大小写，写法与 Java 正则一致，空数组表示不屏蔽。想验证是否真的命中，开 `/aichat debug` 看日志即可。
+
 **配置文件会不会被覆盖？**
 不会。只有配置版本落后于模组版本时，才会先备份成 `config.json.v<旧版本>.bak` 再补上新字段。你自己加的注释、空行、顺序都保留。
 
@@ -124,10 +132,11 @@
 
 ```bash
 export JAVA_HOME=/path/to/jdk-25
-./gradlew build
+./gradlew build              # Fabric 包 -> build/libs/aichat-<版本>-fabric.jar
+./gradlew -p neoforge build  # NeoForge 包 -> neoforge/build/libs/aichat-<版本>-neoforge.jar
 ```
 
-产物在 `build/libs/aichat-<版本>.jar`。
+两个包共用同一套源码，NeoForge 子构建只是把加载器相关的几个类换成自己的实现。
 
 ## 许可证
 

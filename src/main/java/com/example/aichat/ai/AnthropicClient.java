@@ -1,6 +1,6 @@
 package com.example.aichat.ai;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
@@ -83,7 +83,7 @@ public final class AnthropicClient {
             addMessage(messages, "user", stripTools
                     ? "【系统】工具已经全部回收，本轮只能直接输出最终 JSON，不要再调用工具，也不要输出任何工具调用标记。"
                     : "【系统】工具调用次数已达上限，本轮不要再调用工具，请直接用 JSON 给出最终结论。");
-            AiChatMod.LOGGER.info("工具调用已达 {} 轮，{}", MAX_TOOL_ROUNDS,
+            AiChat.LOGGER.info("工具调用已达 {} 轮，{}", MAX_TOOL_ROUNDS,
                     stripTools ? "本轮回收工具，要求直接给出结论" : "本轮保留工具但要求收尾");
         }
 
@@ -102,7 +102,7 @@ public final class AnthropicClient {
                 return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
             }
             if (stripTools) {
-                AiChatMod.LOGGER.warn("模型在没有工具的情况下仍返回 tool_use，本次按不回复处理");
+                AiChat.LOGGER.warn("模型在没有工具的情况下仍返回 tool_use，本次按不回复处理");
                 return CompletableFuture.completedFuture(finalResult(response, usage, usedTools));
             }
             if (exhausted) {
@@ -167,7 +167,7 @@ public final class AnthropicClient {
      */
     private static CompletableFuture<RawResult> repairRound(
             ApiProfile profile, JsonArray messages, String prose, TokenUsage usage, List<Tool> tools) {
-        AiChatMod.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），补发一次改写请求：{}",
+        AiChat.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），补发一次改写请求：{}",
                 prose.length(), ConsoleSafe.escape(prosePreview(prose)));
 
         addMessage(messages, "assistant", prose);
@@ -179,10 +179,10 @@ public final class AnthropicClient {
             TokenUsage total = usage.plus(parseUsage(response));
             String repaired = extractText(response);
             if (findToolUses(response).isEmpty() && Fallbacks.isJsonObject(repaired)) {
-                AiChatMod.LOGGER.info("改写请求成功，本轮按改写后的 JSON 回复");
+                AiChat.LOGGER.info("改写请求成功，本轮按改写后的 JSON 回复");
                 return new RawResult(repaired, total);
             }
-            AiChatMod.LOGGER.warn("改写请求仍没给出 JSON，本轮按原文兜底");
+            AiChat.LOGGER.warn("改写请求仍没给出 JSON，本轮按原文兜底");
             return fallbackFromProse(prose, total);
         });
     }
@@ -205,16 +205,16 @@ public final class AnthropicClient {
         if (usedTools && (empty || markup)) {
             String fallback = Fallbacks.replyJsonOrNull();
             if (fallback != null) {
-                AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），本轮改用兜底话术回复",
+                AiChat.LOGGER.warn("模型没给出可用 JSON（{}），本轮改用兜底话术回复",
                         empty ? "content 为空" : "输出了工具调用标记");
                 return new RawResult(fallback, usage);
             }
-            AiChatMod.LOGGER.warn("模型没给出可用 JSON（{}），且未配置 fallback_reply，本次按不回复处理",
+            AiChat.LOGGER.warn("模型没给出可用 JSON（{}），且未配置 fallback_reply，本次按不回复处理",
                     empty ? "content 为空" : "输出了工具调用标记");
         } else if (usedTools) {
             String salvaged = Fallbacks.replyJsonFromProse(content);
             if (salvaged != null) {
-                AiChatMod.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），已把原文当作回复兜底：{}",
+                AiChat.LOGGER.warn("模型没按 JSON 契约回复（纯文本 {} 字），已把原文当作回复兜底：{}",
                         content.length(), ConsoleSafe.escape(prosePreview(content)));
                 return new RawResult(salvaged, usage);
             }
@@ -244,7 +244,7 @@ public final class AnthropicClient {
             if (attempt >= MAX_NETWORK_ATTEMPTS || !isTransient(cause)) {
                 return CompletableFuture.<JsonObject>failedFuture(cause);
             }
-            AiChatMod.LOGGER.warn("请求失败（第 {} 次）：{}，{} 秒后重试一次",
+            AiChat.LOGGER.warn("请求失败（第 {} 次）：{}，{} 秒后重试一次",
                     attempt, ConsoleSafe.escape(String.valueOf(cause.getMessage())), NETWORK_RETRY_DELAY_SECONDS);
             return delayedRetry(profile, body, attempt + 1);
         }).thenCompose(future -> future);
@@ -406,7 +406,7 @@ public final class AnthropicClient {
         return InFlight.track(HTTP.sendAsync(request, HttpResponse.BodyHandlers.ofString(StandardCharsets.UTF_8)))
                 .thenApply(response -> {
                     if (StateManager.isDebug()) {
-                        AiChatMod.LOGGER.info("[debug] Anthropic 响应 HTTP {}：{}",
+                        AiChat.LOGGER.info("[debug] Anthropic 响应 HTTP {}：{}",
                                 response.statusCode(), ConsoleSafe.escape(response.body()));
                     }
                     if (response.statusCode() != 200) {

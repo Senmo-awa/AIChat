@@ -156,12 +156,8 @@ public final class AiChatCommand {
         String mention = config.reply_only_when_mentioned
                 ? "开（点名：" + config.mention_names + "）"
                 : "关";
-        String prefixes = config.ignored_chat_prefixes == null || config.ignored_chat_prefixes.isEmpty()
-                ? "[]"
-                : config.ignored_chat_prefixes.toString();
-        String ignoredPlayers = config.ignored_player_prefixes == null || config.ignored_player_prefixes.isEmpty()
-                ? "[]"
-                : config.ignored_player_prefixes.toString();
+        String messageRules = joinRules(config.blocked_message_patterns);
+        String playerRules = joinRules(config.blocked_player_patterns);
 
         source.sendSuccess(() -> Component.literal("—— AI Chat 状态 ——"), false);
         source.sendSuccess(() -> Component.literal(
@@ -184,9 +180,17 @@ public final class AiChatCommand {
                 "私聊：" + ConfigManager.describePrivateChatMode()
                         + "｜私聊历史：" + AiDispatcher.privateHistoryPlayers() + " 位发起者"), false);
         source.sendSuccess(() -> Component.literal(
-                "忽略前缀：" + prefixes
-                        + "｜忽略玩家：" + ignoredPlayers), false);
+                "屏蔽规则：" + messageRules + " / " + playerRules
+                        + "（" + ConfigManager.BLOCK_NOTICE + "）"), false);
         return 1;
+    }
+
+    /** 把屏蔽规则渲染成一行：空数组写「无」，多条用 | 分隔。 */
+    private static String joinRules(java.util.List<String> rules) {
+        if (rules == null || rules.isEmpty()) {
+            return "无";
+        }
+        return String.join(" | ", rules);
     }
 
     /**

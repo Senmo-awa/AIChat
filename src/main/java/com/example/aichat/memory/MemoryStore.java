@@ -1,6 +1,6 @@
 package com.example.aichat.memory;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
 import com.example.aichat.text.ConsoleSafe;
@@ -94,7 +94,7 @@ public final class MemoryStore {
                 }
             }
         } catch (IOException e) {
-            AiChatMod.LOGGER.warn("读取记忆目录失败：{}", ConsoleSafe.escape(e.getMessage()));
+            AiChat.LOGGER.warn("读取记忆目录失败：{}", ConsoleSafe.escape(e.getMessage()));
             return List.of();
         }
         result.sort(Comparator.comparing(Entry::name));
@@ -175,7 +175,7 @@ public final class MemoryStore {
             result.append("；已超过上限的 ").append(COMPRESS_HINT_PERCENT)
                     .append("%，建议下次写入前先压缩成要点。");
         }
-        AiChatMod.LOGGER.info("记忆写入：{}/{}，{} KB（上限 {} KB）",
+        AiChat.LOGGER.info("记忆写入：{}/{}，{} KB（上限 {} KB）",
                 dirName(), name, kb(bytes), limitKb());
         return result.toString();
     }

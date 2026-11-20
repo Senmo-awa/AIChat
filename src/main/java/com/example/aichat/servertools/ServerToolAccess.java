@@ -1,6 +1,6 @@
 package com.example.aichat.servertools;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.ModConfig;
 import com.google.gson.Gson;
@@ -237,7 +237,7 @@ public final class ServerToolAccess {
             LuckPerms luckPerms = LuckPermsProvider.get();
             User user = luckPerms.getUserManager().getUser(player.getUUID());
             if (user == null) {
-                AiChatMod.LOGGER.debug("luckperms 模式：{} 的用户数据还没加载，本次按无权限处理", player.getName().getString());
+                AiChat.LOGGER.debug("luckperms 模式：{} 的用户数据还没加载，本次按无权限处理", player.getName().getString());
                 return false;
             }
             return user.getCachedData().getPermissionData().checkPermission(node).asBoolean();
@@ -259,7 +259,7 @@ public final class ServerToolAccess {
             return;
         }
         luckPermsErrorLogged = true;
-        AiChatMod.LOGGER.warn(message);
+        AiChat.LOGGER.warn(message);
     }
 
     // ---------------- 管理员名单文件 ----------------
@@ -299,7 +299,7 @@ public final class ServerToolAccess {
                     }
                 }
             } catch (IOException | RuntimeException e) {
-                AiChatMod.LOGGER.warn("读取管理员名单失败（本次按空名单处理）：{}", String.valueOf(e.getMessage()));
+                AiChat.LOGGER.warn("读取管理员名单失败（本次按空名单处理）：{}", String.valueOf(e.getMessage()));
             }
         }
     }
@@ -380,7 +380,7 @@ public final class ServerToolAccess {
             Files.createDirectories(file.getParent());
             Files.writeString(file, GSON.toJson(root), StandardCharsets.UTF_8);
         } catch (IOException e) {
-            AiChatMod.LOGGER.warn("写入管理员名单失败：{}", String.valueOf(e.getMessage()));
+            AiChat.LOGGER.warn("写入管理员名单失败：{}", String.valueOf(e.getMessage()));
         }
     }
 

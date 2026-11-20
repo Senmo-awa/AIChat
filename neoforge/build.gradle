@@ -1,0 +1,70 @@
+// NeoForge 构建：与 Fabric 共用 ../src/main/java 下的同一套源码，
+// 只是把加载器相关的 4 个文件换成 neoforge/ 下的实现。
+// 独立 Gradle 工程（不带进根构建），因为两个 Loom 分支版本没法放同一个 buildscript 里。
+plugins {
+    id 'java'
+    id 'dev.architectury.loom-no-remap' version '1.14.473'
+}
+
+// 根目录 gradle.properties 是版本号的唯一来源
+def rootProps = new Properties()
+file('../gradle.properties').withInputStream { rootProps.load(it) }
+
+version = rootProps.mod_version
+group = rootProps.maven_group
+
+base {
+    archivesName = rootProps.archives_base_name
+}
+
+repositories {
+    maven { name = 'NeoForged'; url = 'https://neoforged.forgecdn.net/releases' }
+    mavenCentral()
+    maven { name = 'Fabric'; url = 'https://maven.fabricmc.net/' }
+}
+
+dependencies {
+    minecraft "com.mojang:minecraft:${rootProps.minecraft_version}"
+    neoForge "net.neoforged:neoforge:${project.neoforge_version}"
+    // LuckPerms API：编译期检查，运行时由服务器上的 LuckPerms 提供（没装也不会崩）
+    compileOnly 'net.luckperms:api:5.5'
+}
+
+sourceSets {
+    main {
+        java {
+            srcDirs = ['../src/main/java', 'src/main/java']
+            // 这些是 Fabric 专用入口/事件胶水，NeoForge 版有等价实现
+            exclude 'com/example/aichat/AiChatMod.java'
+            exclude 'com/example/aichat/platform/FabricPlatform.java'
+            exclude 'com/example/aichat/event/ChatListener.java'
+            exclude 'com/example/aichat/event/ConnectionListener.java'
+        }
+        resources {
+            srcDirs = ['../src/main/resources', 'src/main/resources']
+            exclude 'fabric.mod.json'
+        }
+    }
+}
+
+processResources {
+    inputs.property 'version', project.version
+    inputs.property 'neoforge_version', project.neoforge_version
+    filesMatching('META-INF/neoforge.mods.toml') {
+        expand 'version': project.version, 'neoforge_version': project.neoforge_version
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.release = 25
+    options.encoding = 'UTF-8'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
+}
+
+jar {
+    archiveClassifier = 'neoforge'
+}

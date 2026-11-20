@@ -38,3 +38,12 @@ java {
     targetCompatibility = JavaVersion.VERSION_25
     withSourcesJar()
 }
+
+// 多加载器：Fabric 包名带 -fabric，和 -neoforge 包区分开
+jar {
+    archiveClassifier = 'fabric'
+}
+
+sourcesJar {
+    archiveClassifier = 'fabric-sources'
+}

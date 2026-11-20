@@ -1,6 +1,6 @@
 package com.example.aichat.ai;
 
-import com.example.aichat.AiChatMod;
+import com.example.aichat.AiChat;
 import com.example.aichat.config.ApiProfile;
 import com.example.aichat.config.ConfigManager;
 import com.example.aichat.config.Endpoints;
@@ -47,7 +47,7 @@ public final class AiClient {
             TokenUsage judgeUsage = judgeRaw.usage();
             boolean shouldReply = judgeSaysReply(judgeRaw.text());
             if (StateManager.isDebug()) {
-                AiChatMod.LOGGER.info("[debug] 判断模型结论：{}（事件：{}，历史条数：{}）",
+                AiChat.LOGGER.info("[debug] 判断模型结论：{}（事件：{}，历史条数：{}）",
                         shouldReply ? "reply" : "ignore", ctx.eventType(), history.size());
             }
             if (!shouldReply) {
@@ -90,16 +90,16 @@ public final class AiClient {
         // 私聊里的特权请求常常只是「问一句」，没调工具是常态，不打扰日志
         if (ctx.privateChat()) {
             if (StateManager.isDebug() && run.calls() > 0) {
-                AiChatMod.LOGGER.info("[debug] 私聊特权请求调用工具 {} 次，回灌 {} 字符",
+                AiChat.LOGGER.info("[debug] 私聊特权请求调用工具 {} 次，回灌 {} 字符",
                         run.calls(), run.resultCharsUsed());
             }
             return;
         }
         if (run.calls() == 0) {
-            AiChatMod.LOGGER.warn("特权请求没有调用任何工具：{}（模型可能没注意到 server_files，"
+            AiChat.LOGGER.warn("特权请求没有调用任何工具：{}（模型可能没注意到 server_files，"
                     + "若反复出现请检查 system_prompt.txt 的工具规则是否已更新）", ctx.playerName());
         } else if (StateManager.isDebug()) {
-            AiChatMod.LOGGER.info("[debug] 特权请求共调用工具 {} 次，回灌 {} 字符",
+            AiChat.LOGGER.info("[debug] 特权请求共调用工具 {} 次，回灌 {} 字符",
                     run.calls(), run.resultCharsUsed());
         }
     }
@@ -119,10 +119,10 @@ public final class AiClient {
         String jsonText = extractJson(content);
         if (jsonText == null) {
             if (content == null || content.isBlank()) {
-                AiChatMod.LOGGER.warn(
+                AiChat.LOGGER.warn(
                         "判断模型返回空内容，按不回复处理（若同时看到 max_tokens 截断告警，说明思考把输出预算吃光了）");
             } else {
-                AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
+                AiChat.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
             }
             return false;
         }
@@ -135,7 +135,7 @@ public final class AiClient {
             JsonElement reply = json.get("reply");
             return reply != null && reply.isJsonPrimitive() && reply.getAsBoolean();
         } catch (Exception e) {
-            AiChatMod.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
+            AiChat.LOGGER.warn("判断模型返回内容不是合法 JSON，按不回复处理：{}", preview(content));
             return false;
         }
     }
@@ -148,7 +148,7 @@ public final class AiClient {
         String jsonText = extractJson(content);
         if (jsonText == null) {
             if (content != null && !content.isBlank()) {
-                AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略：{}", preview(content));
+                AiChat.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略：{}", preview(content));
             }
             return new AiResult(false, null, usage);
         }
@@ -161,13 +161,13 @@ public final class AiClient {
             String text = textOf(json.get("content"));
             if (text == null || text.isEmpty()) {
                 if ("reply".equals(action)) {
-                    AiChatMod.LOGGER.warn("AI 返回了 reply 但 content 为空，已忽略：{}", preview(content));
+                    AiChat.LOGGER.warn("AI 返回了 reply 但 content 为空，已忽略：{}", preview(content));
                 }
                 return new AiResult(false, null, usage);
             }
             return new AiResult(true, text, usage);
         } catch (Exception e) {
-            AiChatMod.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略：{}", preview(content));
+            AiChat.LOGGER.warn("AI 返回内容不是合法 JSON，已忽略：{}", preview(content));
             return new AiResult(false, null, usage);
         }
     }
